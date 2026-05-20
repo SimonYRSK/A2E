@@ -1,5 +1,9 @@
 import os
 import random
+import warnings
+
+warnings.filterwarnings("ignore", module="zarr")
+warnings.filterwarnings("ignore", category=UserWarning)
 
 import torch
 import torch.distributed as dist
@@ -66,7 +70,7 @@ def custom_collate(batch):
 
 def main():
     if "RANK" not in os.environ:
-        raise RuntimeError("mainfsdp.py 需要通过 torchrun 启动，例如: torchrun --nproc_per_node=2 mainc226.py")
+        raise RuntimeError("mainfsdp.py 需要通过 torchrun 启动，例如: torchrun --nproc_per_node=2 /home/ximutian/A2E/mainc226.py")
 
     device, rank, world_size = setup_distributed()
     is_master = (rank == 0)
@@ -114,7 +118,7 @@ def main():
     for source_name, source_path, source_idx in source_configs:
         train_sets.append(
             Any2ERA5Dataset(
-                start="2022-01-01 00:00:00",
+                start="2024-01-01 00:00:00",
                 end="2024-12-31 18:00:00",
                 x_path=source_path,
                 y_path=y_path,
@@ -140,6 +144,13 @@ def main():
                 sample_seed=data_sample_seed,
             )
         )
+
+    if is_master:
+        for (source_name, _, source_idx), vset in zip(source_configs, val_sets):
+            vlen = len(vset)
+            print(f"[Val] source={source_name} (id={source_idx}) samples={vlen}")
+            if vlen == 0:
+                raise ValueError(f"验证集为空：source={source_name} (id={source_idx})，请检查时间范围或数据路径")
 
     train_set = ConcatDataset(train_sets)
     val_set = ConcatDataset(val_sets)
@@ -174,8 +185,8 @@ def main():
     base_model = A2E(
         img_size=(721, 1440),
         patch_size=(4, 4),
-        in_chans=226,
-        out_chans=226,
+        in_chans=165,
+        out_chans=165,
         embed_dim=384,
         num_groups=32,
         num_heads=8,
@@ -205,7 +216,7 @@ def main():
     else:
         model = base_model
 
-    num_epochs = 220
+    num_epochs = 150
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -246,7 +257,7 @@ def main():
         epochs=num_epochs,
         device=device,
         beta=1e-4,  # KL 目标权重，如未使用 KL 可设为 0
-        tb_dir="/home/ximutian/tensorboard_logs/mainc226",
+        tb_dir="/home/ximutian/tensorboard_logs/mainA2Ec226",
         save_dir="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/checkpoints/mainc226",
         save_interval=1,
         use_amp=False,

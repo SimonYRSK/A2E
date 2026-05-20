@@ -1,4 +1,5 @@
 import torch
+import torch.distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data.distributed import DistributedSampler
@@ -242,6 +243,45 @@ class FSDPUNetAlignTrainer(FSDPUNetTrainer):
             for ch in self.fuxi_rmse_interface.target_channels
         )
 
+        expected_domains = self._get_expected_domains()
+        domain_order = expected_domains if expected_domains is not None else sorted(domain_stats.keys())
+        domain_count = len(domain_order)
+
+        if domain_count > 0:
+            device = self.device if isinstance(self.device, torch.device) else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            recon_sums = torch.zeros(domain_count, device=device, dtype=torch.float64)
+            grad_sums = torch.zeros(domain_count, device=device, dtype=torch.float64)
+            total_sums = torch.zeros(domain_count, device=device, dtype=torch.float64)
+            counts = torch.zeros(domain_count, device=device, dtype=torch.float64)
+            rmse_norm_sums = torch.zeros(domain_count, device=device, dtype=torch.float64)
+            rmse_raw_sums = torch.zeros(domain_count, device=device, dtype=torch.float64)
+            rmse_counts = torch.zeros(domain_count, device=device, dtype=torch.float64)
+
+            for idx, domain_id in enumerate(domain_order):
+                stats = domain_stats.get(domain_id)
+                if stats is not None:
+                    recon_sums[idx] = float(stats["recon"])
+                    grad_sums[idx] = float(stats["grad"])
+                    total_sums[idx] = float(stats["total"])
+                    counts[idx] = float(stats["count"])
+                rmse_stats = domain_rmse_stats.get(domain_id)
+                if rmse_stats is not None:
+                    rmse_norm_sums[idx] = float(rmse_stats["rmse_norm"])
+                    rmse_raw_sums[idx] = float(rmse_stats["rmse_raw"])
+                    rmse_counts[idx] = float(rmse_stats["count"])
+
+            if dist.is_available() and dist.is_initialized():
+                dist.all_reduce(recon_sums, op=dist.ReduceOp.SUM)
+                dist.all_reduce(grad_sums, op=dist.ReduceOp.SUM)
+                dist.all_reduce(total_sums, op=dist.ReduceOp.SUM)
+                dist.all_reduce(counts, op=dist.ReduceOp.SUM)
+                dist.all_reduce(rmse_norm_sums, op=dist.ReduceOp.SUM)
+                dist.all_reduce(rmse_raw_sums, op=dist.ReduceOp.SUM)
+                dist.all_reduce(rmse_counts, op=dist.ReduceOp.SUM)
+        else:
+            recon_sums = grad_sums = total_sums = counts = None
+            rmse_norm_sums = rmse_raw_sums = rmse_counts = None
+
         if self.is_master:
             print(
                 f"\nEpoch {epoch+1} 验证集平均: 总损失={avg_loss:.5f}, "
@@ -258,30 +298,25 @@ class FSDPUNetAlignTrainer(FSDPUNetTrainer):
                 for ch, v in avg_channel_dict.items():
                     self.writer.add_scalar(f"Align/val/channel_rmse/{ch}", v, epoch)
 
-                for domain_id, stats in sorted(domain_stats.items()):
-                    if stats["count"] == 0:
-                        continue
-                    denom = max(stats["count"], 1)
-                    recon_avg = stats["recon"] / denom
-                    grad_avg = stats["grad"] / denom
-                    total_avg = stats["total"] / denom
-                    self.writer.add_scalar(f"Loss/val/domain_{domain_id}/recon", recon_avg, epoch)
-                    self.writer.add_scalar(f"Loss/val/domain_{domain_id}/total_no_kl", total_avg, epoch)
-                    if self.use_grad_loss:
-                        self.writer.add_scalar(f"Loss/val/domain_{domain_id}/grad", grad_avg, epoch)
+                if domain_count > 0 and recon_sums is not None:
+                    for idx, domain_id in enumerate(domain_order):
+                        denom = max(float(counts[idx].item()), 1.0)
+                        recon_avg = float(recon_sums[idx].item()) / denom
+                        grad_avg = float(grad_sums[idx].item()) / denom
+                        total_avg = float(total_sums[idx].item()) / denom
+                        self.writer.add_scalar(f"Loss/val/domain_{domain_id}/recon", recon_avg, epoch)
+                        self.writer.add_scalar(f"Loss/val/domain_{domain_id}/total_no_kl", total_avg, epoch)
+                        if self.use_grad_loss:
+                            self.writer.add_scalar(f"Loss/val/domain_{domain_id}/grad", grad_avg, epoch)
 
-                for domain_id, stats in sorted(domain_rmse_stats.items()):
-                    if stats["count"] == 0:
-                        continue
-                    denom = max(stats["count"], 1)
-                    rmse_norm_avg = stats["rmse_norm"] / denom
-                    rmse_raw_avg = stats["rmse_raw"] / denom
-                    self.writer.add_scalar(f"Align/val/domain_{domain_id}/rmse_norm", rmse_norm_avg, epoch)
-                    self.writer.add_scalar(f"Align/val/domain_{domain_id}/weighted_rmse_raw", rmse_raw_avg, epoch)
+                        rmse_denom = max(float(rmse_counts[idx].item()), 1.0)
+                        rmse_norm_avg = float(rmse_norm_sums[idx].item()) / rmse_denom
+                        rmse_raw_avg = float(rmse_raw_sums[idx].item()) / rmse_denom
+                        self.writer.add_scalar(f"Align/val/domain_{domain_id}/rmse_norm", rmse_norm_avg, epoch)
+                        self.writer.add_scalar(f"Align/val/domain_{domain_id}/weighted_rmse_raw", rmse_raw_avg, epoch)
 
-            expected_domains = self._get_expected_domains()
-            if expected_domains is not None:
-                missing = sorted(set(expected_domains) - set(domain_stats.keys()))
+            if domain_count > 0 and counts is not None:
+                missing = [domain_order[idx] for idx in range(domain_count) if counts[idx].item() <= 0]
                 if missing:
                     print(f"[Val] 警告：本轮验证未覆盖源域 {missing}")
 
