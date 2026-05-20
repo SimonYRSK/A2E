@@ -7,7 +7,7 @@ import torch
 import torch.distributed as dist
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-from torch.utils.data import DataLoader, ConcatDataset
+from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -113,7 +113,6 @@ class FSDPUNetTrainer(UNetTrainer):
 
         # 从验证集 Dataset 中记录通道名与经纬度，用于画图
         ds = getattr(val_loader, "dataset", None)
-        self.val_expected_domains = None
         self.plot_lat = None
         self.plot_lon = None
         self.channel_names = None
@@ -121,42 +120,30 @@ class FSDPUNetTrainer(UNetTrainer):
         self.era5_mean = None
         self.era5_std = None
         if ds is not None:
-            if isinstance(ds, ConcatDataset):
-                for sub_ds in ds.datasets:
-                    if hasattr(sub_ds, "target_channels") and self.channel_names is None:
-                        self.channel_names = list(sub_ds.target_channels)
-                        self.channel_to_idx = {name: idx for idx, name in enumerate(self.channel_names)}
-                    if hasattr(sub_ds, "ds_y") and self.plot_lat is None:
-                        try:
-                            self.plot_lat = sub_ds.ds_y["lat"].values
-                            self.plot_lon = sub_ds.ds_y["lon"].values
-                        except Exception:
-                            self.plot_lat = None
-                            self.plot_lon = None
-                domain_ids = []
-                for sub_ds in ds.datasets:
-                    if hasattr(sub_ds, "source_idx"):
-                        domain_ids.append(int(sub_ds.source_idx))
-                if domain_ids:
-                    self.val_expected_domains = sorted(set(domain_ids))
-            else:
-                # GFS2ERA5Dataset 中有 target_channels 和 ds_y
-                if hasattr(ds, "target_channels"):
-                    self.channel_names = list(ds.target_channels)
-                    self.channel_to_idx = {name: idx for idx, name in enumerate(self.channel_names)}
-                if hasattr(ds, "ds_y"):
-                    try:
-                        self.plot_lat = ds.ds_y["lat"].values
-                        self.plot_lon = ds.ds_y["lon"].values
-                    except Exception:
-                        self.plot_lat = None
-                        self.plot_lon = None
-                if hasattr(ds, "source_idx"):
-                    self.val_expected_domains = [int(ds.source_idx)]
+            # ConcatDataset 不直接暴露底层属性，需要从第一个子数据集提取
+            _ds_attr_source = ds
+            from torch.utils.data import ConcatDataset as _ConcatDataset
+            if isinstance(ds, _ConcatDataset) and len(ds.datasets) > 0:
+                _ds_attr_source = ds.datasets[0]
+                if self.is_master:
+                    print(f"[Init] 检测到 ConcatDataset（{len(ds.datasets)} 个子集），"
+                          f"从第一个子集提取通道名与反归一化参数")
+
+            # GFS2ERA5Dataset / Any2ERA5Dataset 中有 target_channels 和 ds_y
+            if hasattr(_ds_attr_source, "target_channels"):
+                self.channel_names = list(_ds_attr_source.target_channels)
+                self.channel_to_idx = {name: idx for idx, name in enumerate(self.channel_names)}
+            if hasattr(_ds_attr_source, "ds_y"):
+                try:
+                    self.plot_lat = _ds_attr_source.ds_y["lat"].values
+                    self.plot_lon = _ds_attr_source.ds_y["lon"].values
+                except Exception:
+                    self.plot_lat = None
+                    self.plot_lon = None
 
             # 尝试从 ERA5 路径加载反归一化所需的 mean/std
             try:
-                self._load_denorm_stats(ds)
+                self._load_denorm_stats(_ds_attr_source)
             except Exception as e:
                 if self.is_master:
                     print(f"[Init] 加载 ERA5 归一化参数失败，将使用未反归一化的值绘图: {e}")
@@ -305,8 +292,6 @@ class FSDPUNetTrainer(UNetTrainer):
         return 0.5 * (loss_dx + loss_dy)
 
     def _get_expected_domains(self) -> list[int] | None:
-        if self.val_expected_domains is not None:
-            return list(self.val_expected_domains)
         model = self.model.module if hasattr(self.model, "module") else self.model
         num_sources = getattr(model, "num_sources", None)
         if num_sources is None:
@@ -436,34 +421,6 @@ class FSDPUNetTrainer(UNetTrainer):
         avg_l2 = total_l2_loss / max(num_batches, 1)
         avg_grad = total_grad_loss / max(num_batches, 1)
 
-        expected_domains = self._get_expected_domains()
-        domain_order = expected_domains if expected_domains is not None else sorted(domain_stats.keys())
-        domain_count = len(domain_order)
-
-        if domain_count > 0:
-            device = self.device if isinstance(self.device, torch.device) else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            recon_sums = torch.zeros(domain_count, device=device, dtype=torch.float64)
-            grad_sums = torch.zeros(domain_count, device=device, dtype=torch.float64)
-            total_sums = torch.zeros(domain_count, device=device, dtype=torch.float64)
-            counts = torch.zeros(domain_count, device=device, dtype=torch.float64)
-
-            for idx, domain_id in enumerate(domain_order):
-                stats = domain_stats.get(domain_id)
-                if stats is None:
-                    continue
-                recon_sums[idx] = float(stats["recon"])
-                grad_sums[idx] = float(stats["grad"])
-                total_sums[idx] = float(stats["total"])
-                counts[idx] = float(stats["count"])
-
-            if dist.is_available() and dist.is_initialized():
-                dist.all_reduce(recon_sums, op=dist.ReduceOp.SUM)
-                dist.all_reduce(grad_sums, op=dist.ReduceOp.SUM)
-                dist.all_reduce(total_sums, op=dist.ReduceOp.SUM)
-                dist.all_reduce(counts, op=dist.ReduceOp.SUM)
-        else:
-            recon_sums = grad_sums = total_sums = counts = None
-
         if self.is_master:
             print(f"\nEpoch {epoch+1} 验证集平均:")
             if self.recon_loss_type == "l1":
@@ -494,19 +451,21 @@ class FSDPUNetTrainer(UNetTrainer):
                 if self.use_grad_loss:
                     self.writer.add_scalar("Loss/val/Gradloss", avg_grad, global_step)
 
-                if domain_count > 0 and recon_sums is not None:
-                    for idx, domain_id in enumerate(domain_order):
-                        denom = max(float(counts[idx].item()), 1.0)
-                        recon_avg = float(recon_sums[idx].item()) / denom
-                        grad_avg = float(grad_sums[idx].item()) / denom
-                        total_avg = float(total_sums[idx].item()) / denom
-                        self.writer.add_scalar(f"Loss/val/domain_{domain_id}/recon", recon_avg, global_step)
-                        self.writer.add_scalar(f"Loss/val/domain_{domain_id}/total_no_kl", total_avg, global_step)
-                        if self.use_grad_loss:
-                            self.writer.add_scalar(f"Loss/val/domain_{domain_id}/grad", grad_avg, global_step)
+                for domain_id, stats in sorted(domain_stats.items()):
+                    if stats["count"] == 0:
+                        continue
+                    denom = max(stats["count"], 1)
+                    recon_avg = stats["recon"] / denom
+                    grad_avg = stats["grad"] / denom
+                    total_avg = stats["total"] / denom
+                    self.writer.add_scalar(f"Loss/val/domain_{domain_id}/recon", recon_avg, global_step)
+                    self.writer.add_scalar(f"Loss/val/domain_{domain_id}/total_no_kl", total_avg, global_step)
+                    if self.use_grad_loss:
+                        self.writer.add_scalar(f"Loss/val/domain_{domain_id}/grad", grad_avg, global_step)
 
-            if domain_count > 0 and counts is not None:
-                missing = [domain_order[idx] for idx in range(domain_count) if counts[idx].item() <= 0]
+            expected_domains = self._get_expected_domains()
+            if expected_domains is not None:
+                missing = sorted(set(expected_domains) - set(domain_stats.keys()))
                 if missing:
                     print(f"[Val] 警告：本轮验证未覆盖源域 {missing}")
 

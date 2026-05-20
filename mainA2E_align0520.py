@@ -239,10 +239,12 @@ def main():
     fuxi_dir = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/fuxi_inference/main/fuxi"
     fuxi_model = build_fuxi_model(device, fuxi_dir=fuxi_dir)
 
+    channel_names = train_sets[0].target_channels if train_sets else None
+
     fuxi_rmse_interface = FuXiRMSEInterface(
         fuxi_model=fuxi_model,
         era5_zarr_path=y_path,
-        channel_names=train_set.target_channels,
+        channel_names=channel_names,
         device=device,
         target_channels=TARGET_RMSE_CHANNELS,
         channel_weights=DEFAULT_CHANNEL_WEIGHTS,
