@@ -104,7 +104,7 @@ def main():
     # 1) 训练集：使用 2022-2024，全量样本，来自 2020-2024 标准化 GFS Zarr
     gfs_path = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/gfs_2020_2025_c226_0p25_norm.zarr"
     y_path = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/fanjiang/dataset/era5.2010_2025.c226.zarr"
-    hres_path = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/gfs_2020_2025_c226_0p25_norm.zarr"
+    hres_path = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/hres_2024_2025_c226_0p25_norm.zarr"
     cma_path = None
 
     source_configs = [("gfs", gfs_path, SOURCE_REGISTRY.get("gfs", 0))]
@@ -113,13 +113,30 @@ def main():
     if cma_path:
         source_configs.append(("cma", cma_path, SOURCE_REGISTRY.get("cma", 2)))
 
+    # 各源独立指定训练/验证日期范围，不再强制交集对齐
+    SOURCE_DATE_RANGES = {
+        "gfs": {
+            "train_start": "2024-01-01 00:00:00", "train_end": "2024-12-31 18:00:00",
+            "val_start":   "2025-01-01 00:00:00", "val_end":   "2025-11-20 18:00:00",
+        },
+        "hres": {
+            "train_start": "2024-01-01 00:00:00", "train_end": "2024-12-31 18:00:00",
+            "val_start":   "2025-01-01 00:00:00", "val_end":   "2025-11-20 18:00:00",
+        },
+        "cma": {
+            "train_start": "2024-01-01 00:00:00", "train_end": "2024-12-31 18:00:00",
+            "val_start":   "2025-01-01 00:00:00", "val_end":   "2025-11-20 18:00:00",
+        },
+    }
+
     train_sets = []
     val_sets = []
     for source_name, source_path, source_idx in source_configs:
+        dates = SOURCE_DATE_RANGES.get(source_name, SOURCE_DATE_RANGES["gfs"])
         train_sets.append(
             Any2ERA5Dataset(
-                start="2024-01-01 00:00:00",
-                end="2024-12-31 18:00:00",
+                start=dates["train_start"],
+                end=dates["train_end"],
                 x_path=source_path,
                 y_path=y_path,
                 source_name=source_name,
@@ -133,8 +150,8 @@ def main():
 
         val_sets.append(
             Any2ERA5Dataset(
-                start="2025-01-01 00:00:00",
-                end="2025-11-20 18:00:00",
+                start=dates["val_start"],
+                end=dates["val_end"],
                 x_path=source_path,
                 y_path=y_path,
                 source_name=source_name,
@@ -163,7 +180,7 @@ def main():
         batch_size=4,
         shuffle=False,
         sampler=train_sampler,
-        num_workers=2,
+        num_workers=4,
         pin_memory=True,
         drop_last=False,
         collate_fn=custom_collate,
@@ -181,6 +198,11 @@ def main():
         collate_fn=custom_collate,
         prefetch_factor=1,
     )
+    # DANN: 域对抗训练开关
+    using_dann = False
+    domain_loss_weight = 0.1
+    dann_gamma = 10.0
+
     # 先在未包裹 FSDP 的模型上统计参数量（只在 rank0）
     base_model = A2E(
         img_size=(721, 1440),
@@ -203,6 +225,7 @@ def main():
         dropout_rate=dropout_rate,
         use_skip_connections=use_skip_connections,
         use_residual_blocks=use_residual_blocks,
+        using_dann=using_dann,
     )
 
     if is_master:
@@ -272,6 +295,9 @@ def main():
         grad_loss_weight=grad_loss_weight,
         l1_reg_weight=l1_reg_weight,
         l2_reg_weight=l2_reg_weight,
+        using_dann=using_dann,
+        domain_loss_weight=domain_loss_weight,
+        dann_gamma=dann_gamma,
     )
 
     trainer.train(

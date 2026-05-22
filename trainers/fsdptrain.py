@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import torch
+import torch.nn.functional as F
 import torch.distributed as dist
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -13,6 +14,7 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from trainers.trainUNET import UNetTrainer
+from models.dann import grl_lambda_schedule
 
 
 class FSDPUNetTrainer(UNetTrainer):
@@ -49,6 +51,9 @@ class FSDPUNetTrainer(UNetTrainer):
         l1_reg_weight: float = 0.0,
         l2_reg_weight: float = 0.0,
         charbonnier_eps: float = 1e-3,
+        using_dann: bool = False,
+        domain_loss_weight: float = 0.1,
+        dann_gamma: float = 10.0,
     ):
         self.rank = rank
         self.world_size = world_size
@@ -61,6 +66,9 @@ class FSDPUNetTrainer(UNetTrainer):
         self.l1_reg_weight = float(l1_reg_weight)
         self.l2_reg_weight = float(l2_reg_weight)
         self.charbonnier_eps = float(charbonnier_eps)
+        self.using_dann = bool(using_dann)
+        self.domain_loss_weight = float(domain_loss_weight)
+        self.dann_gamma = float(dann_gamma)
 
         # 对 FSDP 包裹的模型，同步内外层的 using_kl 标志，
         # 确保 Trainer 在分布式场景下也能正确识别是否启用 KL
@@ -133,13 +141,9 @@ class FSDPUNetTrainer(UNetTrainer):
             if hasattr(_ds_attr_source, "target_channels"):
                 self.channel_names = list(_ds_attr_source.target_channels)
                 self.channel_to_idx = {name: idx for idx, name in enumerate(self.channel_names)}
-            if hasattr(_ds_attr_source, "ds_y"):
-                try:
-                    self.plot_lat = _ds_attr_source.ds_y["lat"].values
-                    self.plot_lon = _ds_attr_source.ds_y["lon"].values
-                except Exception:
-                    self.plot_lat = None
-                    self.plot_lon = None
+
+            # 加载经纬度坐标：依次尝试 ds_y（ERA5）和 ds_x（GFS），兼容不同命名习惯
+            self._load_plot_coords(_ds_attr_source)
 
             # 尝试从 ERA5 路径加载反归一化所需的 mean/std
             try:
@@ -205,6 +209,59 @@ class FSDPUNetTrainer(UNetTrainer):
                 print(f"[Init] 导出 meanc70/stdc70 失败，可忽略（不影响训练绘图）: {e}")
 
             print(f"[Init] 已加载 ERA5 归一化参数，形状: mean={self.era5_mean.shape}, std={self.era5_std.shape}")
+
+    def _load_plot_coords(self, dataset):
+        """加载经纬度坐标，依次尝试多数据源和多种命名习惯。
+
+        优先级：
+        1. dataset.ds_y (ERA5) → "lat"/"lon"
+        2. dataset.ds_y (ERA5) → "latitude"/"longitude"
+        3. dataset.ds_x (GFS)  → "lat"/"lon"
+        4. dataset.ds_x (GFS)  → "latitude"/"longitude"
+        """
+        coord_sources = []
+        if hasattr(dataset, "ds_y"):
+            coord_sources.append(("ds_y (ERA5)", dataset.ds_y))
+        if hasattr(dataset, "ds_x"):
+            coord_sources.append(("ds_x (GFS)", dataset.ds_x))
+
+        name_pairs = [
+            ("lat", "lon"),
+            ("latitude", "longitude"),
+        ]
+
+        last_error = None
+        for src_label, ds_obj in coord_sources:
+            for lat_name, lon_name in name_pairs:
+                try:
+                    lat_vals = ds_obj[lat_name].values
+                    lon_vals = ds_obj[lon_name].values
+                    self.plot_lat = lat_vals
+                    self.plot_lon = lon_vals
+                    if self.is_master:
+                        print(f"[Init] 已从 {src_label} 获取经纬度（{lat_name}/{lon_name}），"
+                              f"lat=[{lat_vals.min():.2f}, {lat_vals.max():.2f}] "
+                              f"lon=[{lon_vals.min():.2f}, {lon_vals.max():.2f}]")
+                    return
+                except Exception as e:
+                    last_error = e
+                    continue
+
+        # 全部失败时打印最后一个错误
+        if self.is_master:
+            tried = ", ".join(
+                f"{src_label}[{lat_name}]"
+                for src_label, _ in coord_sources
+                for lat_name, _ in name_pairs
+            )
+            print(f"[Init] 无法加载经纬度坐标（尝试了: {tried}），"
+                  f"最后错误: {last_error}，将跳过画图")
+
+    def _grl_lambda(self, current_step: int, total_steps: int) -> float:
+        """计算当前步的 GRL lambda（仅在 using_dann 时有效）。"""
+        if not self.using_dann:
+            return 1.0
+        return grl_lambda_schedule(current_step, total_steps, gamma=self.dann_gamma)
 
     def _all_reduce_loss(self, total_loss: float, total_recon: float, num_batches: int):
         """在所有进程间做 all_reduce，得到全局平均 loss。"""
@@ -327,14 +384,16 @@ class FSDPUNetTrainer(UNetTrainer):
         total_grad_loss = 0.0
         num_batches = 0
 
-        # 只在第一个正常 batch 上画图
-        has_plotted = False
+        # 按 domain 维度追踪画图状态：每个 domain 画一次即停
+        plotted_domains: set[int] = set()
+        expected_domains = set(self._get_expected_domains() or [])
 
         device_type = self.device.type if isinstance(self.device, torch.device) else str(self.device).split(":")[0]
 
         domain_stats = {}
+        val_pbar = tqdm(self.vallo, desc=f"Epoch {epoch+1}/{self.epochs} Val", disable=not self.is_master)
         with torch.no_grad():
-            for batch_idx, (x, y, i, times) in enumerate(self.vallo):
+            for batch_idx, (x, y, i, times) in enumerate(val_pbar):
                 x = x.to(self.device)
                 y = y.to(self.device)
                 domains = i.to(self.device)
@@ -352,11 +411,23 @@ class FSDPUNetTrainer(UNetTrainer):
                 # domains: source domain index
                 weights = self.lat_weight(y.shape)
                 with torch.amp.autocast(device_type=device_type, enabled=self.use_amp):
-                    if getattr(self, "using_kl", False):
-                        x_recon, mu, log_var = self.model(x, times=times, domains=domains)
+                    if self.using_dann:
+                        if getattr(self, "using_kl", False):
+                            x_recon, mu, log_var, domain_logits = self.model(
+                                x, times=times, domains=domains, grl_lambda=1.0,
+                            )
+                        else:
+                            x_recon, domain_logits = self.model(
+                                x, times=times, domains=domains, grl_lambda=1.0,
+                            )
+                            mu = log_var = None
                     else:
-                        x_recon = self.model(x, times=times, domains=domains)
-                        mu = log_var = None
+                        if getattr(self, "using_kl", False):
+                            x_recon, mu, log_var = self.model(x, times=times, domains=domains)
+                        else:
+                            x_recon = self.model(x, times=times, domains=domains)
+                            mu = log_var = None
+                        domain_logits = None
 
                     recon_loss, l1_raw, l2_raw = self._compute_recon_loss_details(x_recon, y, weight=weights)
                     grad_loss = self._compute_grad_loss(x_recon, y) if self.use_grad_loss else torch.tensor(0.0, device=self.device)
@@ -375,6 +446,18 @@ class FSDPUNetTrainer(UNetTrainer):
                     total_l2_loss += float(l2_raw.detach())
                 total_grad_loss += float(grad_loss.detach())
                 num_batches += 1
+
+                if self.is_master:
+                    postfix = {
+                        "loss": f"{float(loss.detach()):.4f}",
+                        "recon": f"{float(recon_loss.detach()):.4f}",
+                    }
+                    if self.use_grad_loss:
+                        postfix["grad"] = f"{float(grad_loss.detach()):.4f}"
+                    if self.using_dann and domain_logits is not None:
+                        dacc = (domain_logits.argmax(dim=1) == domains).float().mean()
+                        postfix["Dacc"] = f"{float(dacc):.2f}"
+                    val_pbar.set_postfix(postfix)
 
                 recon_per = self._compute_recon_loss_per_sample(x_recon, y, weight=weights)
                 if self.use_grad_loss:
@@ -397,15 +480,17 @@ class FSDPUNetTrainer(UNetTrainer):
                     stats["grad"] += float(grad_per[mask].sum().detach())
                     stats["total"] += float(total_per[mask].sum().detach())
 
-                # 在首个正常 batch 上画图（只在主进程）
-                if self.is_master and not has_plotted:
-                    try:
-                        self._plot_validation_maps(epoch, x_recon, y, times, domains=domains)
-                    except Exception as e:
-                        # 避免画图错误中断训练，仅在主进程打印
-                        if self.is_master:
-                            print(f"[Val] 绘图时出错: {e}")
-                    has_plotted = True
+                # 对尚未画过的 domain，取第一个样本画图
+                if self.is_master and expected_domains:
+                    current_domains = set(torch.unique(domains).tolist())
+                    new_domains = current_domains - plotted_domains
+                    if new_domains:
+                        try:
+                            self._plot_validation_maps(epoch, x_recon, y, times, domains=domains, skip_domains=plotted_domains)
+                        except Exception as e:
+                            if self.is_master:
+                                print(f"[Val] 绘图时出错: {e}")
+                        plotted_domains |= new_domains
 
         # 若全部 batch 都被跳过，避免除以 0
         if num_batches == 0:
@@ -471,11 +556,10 @@ class FSDPUNetTrainer(UNetTrainer):
 
         return avg_loss
 
-    def _plot_validation_maps(self, epoch, x_recon, y, times, domains=None):
-        """在验证集首个正常 batch 上，为指定通道画 GT vs 预测 对比图。
+    def _plot_validation_maps(self, epoch, x_recon, y, times, domains=None, skip_domains=None):
+        """在验证集首个正常 batch 上，为每个源域取第一个样本画 GT vs 预测 对比图。
 
-        仅在 rank0 调用。借鉴 picture.py 的三联图格式：GT / Forecast / Forecast-GT，
-        且 GT 与 Forecast 共用相同的 colorbar 范围。
+        仅在 rank0 调用。每个 domain 每个 epoch 只画一次，已画过的 domain 通过 skip_domains 跳过。
         """
         if not self.is_master:
             return
@@ -492,22 +576,9 @@ class FSDPUNetTrainer(UNetTrainer):
         near_surface_channels = ["t2m", "u10m", "v10m", "msl", "tp"]
         level500_channels = ["t500", "u500", "v500", "z500", "q500"]
 
-        # 仅取当前 batch 的第一个样本作图
-        pred_sample = x_recon[0].detach().cpu().numpy()  # (C, H, W)
-        gt_sample = y[0].detach().cpu().numpy()          # (C, H, W)
-
         # 获取源数据反向注册表，用于获取源名称
         from data.pairsetc226 import SOURCE_REGISTRY
         INV_SOURCE_REGISTRY = {v: k for k, v in SOURCE_REGISTRY.items()}
-        domain_idx = int(domains[0].item()) if (domains is not None and len(domains) > 0) else 0
-        source_name = INV_SOURCE_REGISTRY.get(domain_idx, f"source{domain_idx}")
-
-        # 时间字符串用于文件名
-        try:
-            t0 = pd.Timestamp(str(times[0]))
-            time_str = t0.strftime("%Y%m%d_%H%M")
-        except Exception:
-            time_str = "unknown_time"
 
         lat = self.plot_lat
         lon = self.plot_lon
@@ -518,80 +589,108 @@ class FSDPUNetTrainer(UNetTrainer):
             out_root = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/channelpics/swinunet_2022_2024_3_21"
         else:
             out_root = self.plot_root
-            
-        # 在 epoch 目录下按源名称（gfs/hres等）分子文件夹存放
-        epoch_dir = os.path.join(out_root, f"epoch_{epoch+1:03d}", source_name)
-        os.makedirs(epoch_dir, exist_ok=True)
 
-        def plot_one_channel(ch_name: str):
-            if ch_name not in self.channel_to_idx:
-                print(f"[Val] 通道 {ch_name} 不在当前 target_channels 中，跳过")
-                return
+        # 时间字符串用于文件名（取首个样本的时间，同一 batch 内时间应相同）
+        try:
+            t0 = pd.Timestamp(str(times[0]))
+            time_str = t0.strftime("%Y%m%d_%H%M")
+        except Exception:
+            time_str = "unknown_time"
 
-            idx = self.channel_to_idx[ch_name]
-            gt_2d = gt_sample[idx]
-            pred_2d = pred_sample[idx]
+        # 找出 batch 中每个源域的第一个样本索引
+        domain_indices = {}
+        if domains is not None:
+            for di in range(len(domains)):
+                d = int(domains[di].item())
+                if d not in domain_indices:
+                    domain_indices[d] = di
 
-            # 若存在 ERA5 的 mean/std，则先反归一化到物理量
-            if self.era5_mean is not None and self.era5_std is not None:
-                try:
-                    mean_2d = self.era5_mean[idx]
-                    std_2d = self.era5_std[idx]
-                    gt_2d = gt_2d * std_2d + mean_2d
-                    pred_2d = pred_2d * std_2d + mean_2d
-                except Exception as e:
-                    if self.is_master:
-                        print(f"[Val] 通道 {ch_name} 反归一化失败，将使用归一化值绘图: {e}")
+        if not domain_indices:
+            # 无 domain 信息时退化为画第一个样本
+            domain_indices = {0: 0}
 
-            # 统一 GT 与 Forecast 的 colorbar 范围
-            vmin = float(np.nanmin([gt_2d.min(), pred_2d.min()]))
-            vmax = float(np.nanmax([gt_2d.max(), pred_2d.max()]))
-            if vmin == vmax:
-                vmax = vmin + 1e-6
+        skip = set(skip_domains or [])
+        for domain_idx, sample_idx in domain_indices.items():
+            if domain_idx in skip:
+                continue
+            source_name = INV_SOURCE_REGISTRY.get(domain_idx, f"source{domain_idx}")
 
-            diff_2d = pred_2d - gt_2d
-            diff_max = float(np.nanmax(np.abs(diff_2d)))
-            if diff_max == 0:
-                diff_max = 1e-6
+            pred_sample = x_recon[sample_idx].detach().cpu().numpy()  # (C, H, W)
+            gt_sample = y[sample_idx].detach().cpu().numpy()          # (C, H, W)
 
-            fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+            # 按源名称分子文件夹存放
+            epoch_dir = os.path.join(out_root, f"epoch_{epoch+1:03d}", source_name)
+            os.makedirs(epoch_dir, exist_ok=True)
 
-            im0 = axes[0].pcolormesh(lon, lat, gt_2d, shading="auto", vmin=vmin, vmax=vmax)
-            axes[0].set_title(f"GT - {ch_name}")
-            plt.colorbar(im0, ax=axes[0])
+            def plot_one_channel(ch_name: str, _pred=pred_sample, _gt=gt_sample):
+                if ch_name not in self.channel_to_idx:
+                    print(f"[Val] 通道 {ch_name} 不在当前 target_channels 中，跳过")
+                    return
 
-            im1 = axes[1].pcolormesh(lon, lat, pred_2d, shading="auto", vmin=vmin, vmax=vmax)
-            axes[1].set_title(f"Forecast - {ch_name}")
-            plt.colorbar(im1, ax=axes[1])
+                idx = self.channel_to_idx[ch_name]
+                gt_2d = _gt[idx]
+                pred_2d = _pred[idx]
 
-            # 差值图使用蓝-白-红的发散色图：0 附近为白/灰，正值为红，负值为蓝
-            im2 = axes[2].pcolormesh(
-                lon,
-                lat,
-                diff_2d,
-                shading="auto",
-                vmin=-diff_max,
-                vmax=diff_max,
-                cmap="bwr",
-            )
-            axes[2].set_title(f"Forecast - GT - {ch_name}")
-            plt.colorbar(im2, ax=axes[2])
+                # 若存在 ERA5 的 mean/std，则先反归一化到物理量
+                if self.era5_mean is not None and self.era5_std is not None:
+                    try:
+                        mean_2d = self.era5_mean[idx]
+                        std_2d = self.era5_std[idx]
+                        gt_2d = gt_2d * std_2d + mean_2d
+                        pred_2d = pred_2d * std_2d + mean_2d
+                    except Exception as e:
+                        if self.is_master:
+                            print(f"[Val] 通道 {ch_name} 反归一化失败，将使用归一化值绘图: {e}")
 
-            for ax in axes:
-                ax.set_xlabel("lon")
-                ax.set_ylabel("lat")
+                # 统一 GT 与 Forecast 的 colorbar 范围
+                vmin = float(np.nanmin([gt_2d.min(), pred_2d.min()]))
+                vmax = float(np.nanmax([gt_2d.max(), pred_2d.max()]))
+                if vmin == vmax:
+                    vmax = vmin + 1e-6
 
-            fig.suptitle(f"Epoch {epoch+1} Val Sample, {time_str}, {ch_name}")
-            fig.tight_layout()
+                diff_2d = pred_2d - gt_2d
+                diff_max = float(np.nanmax(np.abs(diff_2d)))
+                if diff_max == 0:
+                    diff_max = 1e-6
 
-            fname = f"epoch{epoch+1:03d}_{time_str}_{ch_name}.png"
-            save_path = os.path.join(epoch_dir, fname)
-            plt.savefig(save_path, dpi=200, bbox_inches="tight")
-            plt.close(fig)
-            print(f"[Val] 已保存通道 {ch_name} 图像到: {save_path}")
+                fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-        for ch in near_surface_channels + level500_channels:
-            plot_one_channel(ch)
+                im0 = axes[0].pcolormesh(lon, lat, gt_2d, shading="auto", vmin=vmin, vmax=vmax)
+                axes[0].set_title(f"GT - {ch_name}")
+                plt.colorbar(im0, ax=axes[0])
+
+                im1 = axes[1].pcolormesh(lon, lat, pred_2d, shading="auto", vmin=vmin, vmax=vmax)
+                axes[1].set_title(f"Forecast - {ch_name}")
+                plt.colorbar(im1, ax=axes[1])
+
+                # 差值图使用蓝-白-红的发散色图：0 附近为白/灰，正值为红，负值为蓝
+                im2 = axes[2].pcolormesh(
+                    lon,
+                    lat,
+                    diff_2d,
+                    shading="auto",
+                    vmin=-diff_max,
+                    vmax=diff_max,
+                    cmap="bwr",
+                )
+                axes[2].set_title(f"Forecast - GT - {ch_name}")
+                plt.colorbar(im2, ax=axes[2])
+
+                for ax in axes:
+                    ax.set_xlabel("lon")
+                    ax.set_ylabel("lat")
+
+                fig.suptitle(f"Epoch {epoch+1} Val Sample, {time_str}, {ch_name}")
+                fig.tight_layout()
+
+                fname = f"epoch{epoch+1:03d}_{time_str}_{ch_name}.png"
+                save_path = os.path.join(epoch_dir, fname)
+                plt.savefig(save_path, dpi=200, bbox_inches="tight")
+                plt.close(fig)
+                print(f"[Val] 已保存通道 {ch_name} 图像到: {save_path}")
+
+            for ch in near_surface_channels + level500_channels:
+                plot_one_channel(ch)
 
     def train_one_epoch(self, epoch):
         self.model.train()
@@ -601,6 +700,8 @@ class FSDPUNetTrainer(UNetTrainer):
         total_l2_loss = 0.0
         total_grad_loss = 0.0
         total_kl_loss = 0.0
+        total_domain_loss = 0.0
+        total_domain_acc = 0.0
         num_batches = 0
 
         # DistributedSampler 设 epoch，保证每轮 shuffle 不同
@@ -631,22 +732,45 @@ class FSDPUNetTrainer(UNetTrainer):
             weights = self.lat_weight(y.shape)
 
             self.opt.zero_grad(set_to_none=True)
+
+            # GRL lambda 渐进调度
+            total_steps = self.epochs * len(self.trainlo)
+            current_step = epoch * len(self.trainlo) + batch_idx
+            grl_lambda = self._grl_lambda(current_step, total_steps)
+
             with torch.amp.autocast(device_type=device_type, enabled=self.use_amp):
-                if getattr(self, "using_kl", False):
-                    x_recon, mu, log_var = self.model(x, times=times, domains=domains)
+                if self.using_dann:
+                    if getattr(self, "using_kl", False):
+                        x_recon, mu, log_var, domain_logits = self.model(
+                            x, times=times, domains=domains, grl_lambda=grl_lambda,
+                        )
+                    else:
+                        x_recon, domain_logits = self.model(
+                            x, times=times, domains=domains, grl_lambda=grl_lambda,
+                        )
+                        mu = log_var = None
                 else:
-                    x_recon = self.model(x, times=times, domains=domains)
-                    mu = log_var = None
+                    if getattr(self, "using_kl", False):
+                        x_recon, mu, log_var = self.model(x, times=times, domains=domains)
+                    else:
+                        x_recon = self.model(x, times=times, domains=domains)
+                        mu = log_var = None
+                    domain_logits = None
 
                 recon_loss, l1_raw, l2_raw = self._compute_recon_loss_details(x_recon, y, weight=weights)
                 grad_loss = self._compute_grad_loss(x_recon, y) if self.use_grad_loss else torch.tensor(0.0, device=self.device)
 
+                # 域分类损失
+                domain_loss = torch.tensor(0.0, device=self.device)
+                if domain_logits is not None:
+                    domain_loss = F.cross_entropy(domain_logits, domains)
+
                 if getattr(self, "using_kl", False) and mu is not None and log_var is not None:
                     kl_loss = -0.5 * torch.mean(1 + log_var - mu.pow(2) - log_var.exp())
-                    loss = recon_loss + self.grad_loss_weight * grad_loss + self.beta * kl_loss
+                    loss = recon_loss + self.grad_loss_weight * grad_loss + self.beta * kl_loss + self.domain_loss_weight * domain_loss
                 else:
                     kl_loss = torch.tensor(0.0, device=self.device)
-                    loss = recon_loss + self.grad_loss_weight * grad_loss
+                    loss = recon_loss + self.grad_loss_weight * grad_loss + self.domain_loss_weight * domain_loss
 
             # 如果 loss 本身出现 NaN/Inf，同样跳过该 batch，避免反向传播污染参数
             if torch.isnan(loss).any() or torch.isinf(loss).any():
@@ -659,6 +783,10 @@ class FSDPUNetTrainer(UNetTrainer):
             loss_item = float(loss.detach())
             recon_item = float(recon_loss.detach())
             kl_item = float(kl_loss.detach())
+            domain_loss_item = float(domain_loss.detach())
+            domain_acc_item = float(
+                (domain_logits.argmax(dim=1) == domains).float().mean()
+            ) if domain_logits is not None else 0.0
 
             total_loss += loss_item
             total_recon_loss += recon_item
@@ -668,6 +796,8 @@ class FSDPUNetTrainer(UNetTrainer):
                 total_l2_loss += float(l2_raw.detach())
             total_grad_loss += float(grad_loss.detach())
             total_kl_loss += kl_item
+            total_domain_loss += domain_loss_item
+            total_domain_acc += domain_acc_item
             num_batches += 1
 
             self.scaler.scale(loss).backward()
@@ -692,6 +822,8 @@ class FSDPUNetTrainer(UNetTrainer):
                     }
                     if self.use_grad_loss:
                         postfix['Grad'] = f'{float(grad_loss.detach()):.4f}'
+                    if self.using_dann:
+                        postfix['Dacc'] = f'{domain_acc_item:.2f}'
                     pbar.set_postfix(postfix)
                 else:
                     postfix = {
@@ -700,6 +832,8 @@ class FSDPUNetTrainer(UNetTrainer):
                     }
                     if self.use_grad_loss:
                         postfix['Grad'] = f'{float(grad_loss.detach()):.4f}'
+                    if self.using_dann:
+                        postfix['Dacc'] = f'{domain_acc_item:.2f}'
                     pbar.set_postfix(postfix)
 
                 if batch_idx % 10 == 0 and hasattr(self, 'writer') and self.writer:
@@ -715,6 +849,10 @@ class FSDPUNetTrainer(UNetTrainer):
                         self.writer.add_scalar("Loss/batch/Gradloss", float(grad_loss.detach()), step)
                     if getattr(self, "using_kl", False):
                         self.writer.add_scalar("Loss/batch/kl", kl_item, step)
+                    if self.using_dann:
+                        self.writer.add_scalar("DANN/batch/domain_loss", domain_loss_item, step)
+                        self.writer.add_scalar("DANN/batch/domain_acc", domain_acc_item, step)
+                        self.writer.add_scalar("DANN/batch/grl_lambda", grl_lambda, step)
 
         # 得到全局平均 train loss（这里只 all_reduce 总损失和重建损失，KL 已体现在总损失中）
         if num_batches == 0:
@@ -728,6 +866,8 @@ class FSDPUNetTrainer(UNetTrainer):
         avg_l1 = total_l1_loss / max(num_batches, 1)
         avg_l2 = total_l2_loss / max(num_batches, 1)
         avg_grad = total_grad_loss / max(num_batches, 1)
+        avg_domain_loss = total_domain_loss / max(num_batches, 1)
+        avg_domain_acc = total_domain_acc / max(num_batches, 1)
 
         # 验证也返回全局损失
         val_loss = self.validate_one_epoch(epoch)
@@ -756,6 +896,9 @@ class FSDPUNetTrainer(UNetTrainer):
                 else:
                     print(f"总损失={avg_loss:.5f}, L2loss={avg_l2:.5f}")
 
+            if self.using_dann:
+                print(f"DomainLoss={avg_domain_loss:.5f}, DomainAcc={avg_domain_acc:.3f}")
+
             global_step = epoch
             if hasattr(self, 'writer') and self.writer:
                 self.writer.add_scalar("Loss/train/total",    avg_loss,  global_step)
@@ -767,6 +910,9 @@ class FSDPUNetTrainer(UNetTrainer):
                     self.writer.add_scalar("Loss/train/L2loss", avg_l2, global_step)
                 if self.use_grad_loss:
                     self.writer.add_scalar("Loss/train/Gradloss", avg_grad, global_step)
+                if self.using_dann:
+                    self.writer.add_scalar("DANN/epoch/domain_loss", avg_domain_loss, global_step)
+                    self.writer.add_scalar("DANN/epoch/domain_acc", avg_domain_acc, global_step)
                 # 当使用 KL 且启用 KL annealing 时，记录当前 beta
                 if getattr(self, "using_kl", False) and getattr(self, "kl_anneal", False):
                     self.writer.add_scalar("hyper/beta",      self.beta, global_step)

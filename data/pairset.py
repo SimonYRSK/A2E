@@ -13,43 +13,50 @@ try:
 except RuntimeError:
     pass
 
-TARGET_CHANNELS = ['z50', 'z100', 'z150', 'z200', 'z250', 'z300', 'z400', 'z500',
-               'z600', 'z700', 'z850', 'z925', 'z1000', 't50', 't100', 't150',
-               't200', 't250', 't300', 't400', 't500', 't600', 't700', 't850',
-               't925', 't1000', 'u50', 'u100', 'u150', 'u200', 'u250', 'u300',
-               'u400', 'u500', 'u600', 'u700', 'u850', 'u925', 'u1000', 'v50',
-               'v100', 'v150', 'v200', 'v250', 'v300', 'v400', 'v500', 'v600',
-               'v700', 'v850', 'v925', 'v1000', 'r50', 'r100', 'r150', 'r200',
-               'r250', 'r300', 'r400', 'r500', 'r600', 'r700', 'r850', 'r925',
-               'r1000', 't2m', 'u10m', 'v10m', 'msl', 'tp']
+TARGET_CHANNELS = [
+    'z10', 'z20', 'z50', 'z70', 'z100', 'z150', 'z200', 'z250', 'z300', 'z400', 'z500',
+    'z600', 'z700', 'z750', 'z800', 'z850', 'z900', 'z925', 'z950', 'z1000',
+    't10', 't20', 't50', 't70', 't100', 't150', 't200', 't250', 't300', 't400', 't500', 't600',
+    't700', 't750', 't800', 't850', 't900', 't925', 't950', 't1000',
+    'u10', 'u20', 'u50', 'u70', 'u100', 'u150', 'u200', 'u250', 'u300', 'u400', 'u500', 'u600',
+    'u700', 'u750', 'u800', 'u850', 'u900', 'u925', 'u950', 'u1000',
+    'v10', 'v20', 'v50', 'v70', 'v100', 'v150', 'v200', 'v250', 'v300', 'v400', 'v500', 'v600',
+    'v700', 'v750', 'v800', 'v850', 'v900', 'v925', 'v950', 'v1000',
+    'q10', 'q20', 'q50', 'q70', 'q100', 'q150', 'q200', 'q250', 'q300', 'q400', 'q500', 'q600',
+    'q700', 'q750', 'q800', 'q850', 'q900', 'q925', 'q950', 'q1000',
+    'r10', 'r20', 'r50', 'r70', 'r100', 'r150', 'r200', 'r250', 'r300', 'r400', 'r500', 'r600',
+    'r700', 'r750', 'r800', 'r850', 'r900', 'r925', 'r950', 'r1000',
+    'd10', 'd20', 'd50', 'd70', 'd100', 'd150', 'd200', 'd250', 'd300', 'd400', 'd500', 'd600',
+    'd700', 'd750', 'd800', 'd850', 'd900', 'd925', 'd950', 'd1000',
+    'vo10', 'vo20', 'vo50', 'vo70', 'vo100', 'vo150', 'vo200', 'vo250', 'vo300', 'vo400', 'vo500',
+    'vo600', 'vo700', 'vo750', 'vo800', 'vo850', 'vo900', 'vo925', 'vo950', 'vo1000',
+    'msl', 't2m', 'd2m', 'u10m', 'v10m'
+]
 
 START_TIME = "2021-01-01 00:00:00"
 END_TIME = "2024-12-31 18:00:00"
 
-ERA5_PATH = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/huangqiusheng/datasets/era5.rtm.02_25.6h.c109.new3/"
-GFS_PATH = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/database/gfs_2020_2024_c70_normalized"
+ERA5_PATH = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/fanjiang/dataset/era5.2010_2025.c226.zarr"
+GFS_PATH = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/gfs_2020_2025_c226_normalized"
 
 BAD_TIMES = {
-    pd.Timestamp("202401010000"),
-    pd.Timestamp("202501010000"),
+
 }
 
 # Source domain registry: each source gets a unique integer index.
 # The model's source embedding table uses these indices to look up a learned
-# vector that encodes the domain identity (GFS bias, HRES resolution, etc.).
-# Extend this dict when adding new source domains.
+# vector that encodes the domain identity.
 SOURCE_REGISTRY = {
     "gfs": 0,
     "hres": 1,
 }
 
 class Any2ERA5Dataset(Dataset):
-    """Multi-source to ERA5 dataset.
+    """Multi-source to ERA5 dataset (226-channel version).
 
-    Each dataset instance corresponds to exactly one source domain (e.g. GFS,
-    HRES, CMA). Multiple instances can be combined via torch.utils.data.ConcatDataset
-    to train a single model on all sources simultaneously. The source_idx returned
-    by __getitem__ tells the model which domain the sample belongs to.
+    Each dataset instance corresponds to exactly one source domain. Multiple
+    instances can be combined via torch.utils.data.ConcatDataset to train a
+    single model on all sources simultaneously.
     """
 
     def __init__(
@@ -62,10 +69,8 @@ class Any2ERA5Dataset(Dataset):
         target_mode: str = "era5",
         source_name: str = "gfs",
         source_idx: int | None = None,
-        # Validation: select N whole days per month in a given year
         val_sample_per_month: int | None = None,
         val_sample_year: int | None = None,
-        # Training: cap samples per year for fast iteration
         max_samples_per_year: int | None = None,
         sample_seed: int = 42,
     ):
@@ -90,8 +95,17 @@ class Any2ERA5Dataset(Dataset):
         self.ds_x = xr.open_zarr(self.x_path, consolidated=False)
         self.ds_y = xr.open_zarr(self.y_path, consolidated=False)
 
-        x_times = pd.DatetimeIndex(self.ds_x.time.values)
-        y_times = pd.DatetimeIndex(self.ds_y.time.values)
+        def get_time_dim(ds):
+            for t_name in ['time', 'datetime', 'valid_time']:
+                if t_name in ds:
+                    return t_name
+            raise ValueError(f"Cannot find time coordinate/variable. Available: {list(ds.variables.keys())}")
+
+        self.x_time_dim = get_time_dim(self.ds_x)
+        self.y_time_dim = get_time_dim(self.ds_y)
+
+        x_times = pd.DatetimeIndex(self.ds_x[self.x_time_dim].values)
+        y_times = pd.DatetimeIndex(self.ds_y[self.y_time_dim].values)
 
         x_times_in_range = x_times[(x_times >= self.start_time) & (x_times <= self.end_time)]
         y_times_in_range = y_times[(y_times >= self.start_time) & (y_times <= self.end_time)]
@@ -171,8 +185,8 @@ class Any2ERA5Dataset(Dataset):
     def __getitem__(self, idx):
         current_time = self.time_list[idx]
 
-        x_data = self.ds_x["data"].sel(time=current_time).isel(channel=self.x_target_idx)
-        y_data = self.ds_y["data"].sel(time=current_time).isel(channel=self.y_target_idx)
+        x_data = self.ds_x["data"].sel({self.x_time_dim: current_time}).isel(channel=self.x_target_idx)
+        y_data = self.ds_y["data"].sel({self.y_time_dim: current_time}).isel(channel=self.y_target_idx)
 
         x_np = x_data.values.astype(np.float32)
         y_np = y_data.values.astype(np.float32)

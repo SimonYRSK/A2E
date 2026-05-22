@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data.distributed import DistributedSampler
@@ -130,11 +131,23 @@ class FSDPUNetAlignTrainer(FSDPUNetTrainer):
 
                 weights = self.lat_weight(y.shape)
                 with torch.amp.autocast(device_type=device_type, enabled=self.use_amp):
-                    if getattr(self, "using_kl", False):
-                        x_recon, mu, log_var = self.model(x, times=times, domains=domains)
+                    if self.using_dann:
+                        if getattr(self, "using_kl", False):
+                            x_recon, mu, log_var, domain_logits = self.model(
+                                x, times=times, domains=domains, grl_lambda=1.0,
+                            )
+                        else:
+                            x_recon, domain_logits = self.model(
+                                x, times=times, domains=domains, grl_lambda=1.0,
+                            )
+                            mu = log_var = None
                     else:
-                        x_recon = self.model(x, times=times, domains=domains)
-                        mu = log_var = None
+                        if getattr(self, "using_kl", False):
+                            x_recon, mu, log_var = self.model(x, times=times, domains=domains)
+                        else:
+                            x_recon = self.model(x, times=times, domains=domains)
+                            mu = log_var = None
+                        domain_logits = None
 
                     x_recon = self._nan_clean(x_recon)
                     recon_loss, l1_raw, l2_raw = self._compute_recon_loss_details(x_recon, y, weight=weights)
@@ -335,12 +348,30 @@ class FSDPUNetAlignTrainer(FSDPUNetTrainer):
             weights = self.lat_weight(y.shape)
 
             self.opt.zero_grad(set_to_none=True)
+
+            # GRL lambda 渐进调度
+            total_steps = self.epochs * len(self.trainlo)
+            current_step = epoch * len(self.trainlo) + batch_idx
+            grl_lambda = self._grl_lambda(current_step, total_steps)
+
             with torch.amp.autocast(device_type=device_type, enabled=self.use_amp):
-                if getattr(self, "using_kl", False):
-                    x_recon, mu, log_var = self.model(x, times=times, domains=domains)
+                if self.using_dann:
+                    if getattr(self, "using_kl", False):
+                        x_recon, mu, log_var, domain_logits = self.model(
+                            x, times=times, domains=domains, grl_lambda=grl_lambda,
+                        )
+                    else:
+                        x_recon, domain_logits = self.model(
+                            x, times=times, domains=domains, grl_lambda=grl_lambda,
+                        )
+                        mu = log_var = None
                 else:
-                    x_recon = self.model(x, times=times, domains=domains)
-                    mu = log_var = None
+                    if getattr(self, "using_kl", False):
+                        x_recon, mu, log_var = self.model(x, times=times, domains=domains)
+                    else:
+                        x_recon = self.model(x, times=times, domains=domains)
+                        mu = log_var = None
+                    domain_logits = None
 
                 x_recon = self._nan_clean(x_recon)
 
@@ -351,6 +382,11 @@ class FSDPUNetAlignTrainer(FSDPUNetTrainer):
                     kl_loss = -0.5 * torch.mean(1 + log_var - mu.pow(2) - log_var.exp())
                 else:
                     kl_loss = torch.tensor(0.0, device=self.device)
+
+                # 域分类损失 (DANN)
+                domain_loss = torch.tensor(0.0, device=self.device)
+                if domain_logits is not None:
+                    domain_loss = F.cross_entropy(domain_logits, domains)
 
             do_rmse = (batch_idx % self.rmse_every_n_steps == 0)
             if do_rmse:
@@ -374,7 +410,7 @@ class FSDPUNetAlignTrainer(FSDPUNetTrainer):
                 weighted_rmse_raw = 0.0
                 valid_count = 0
 
-            loss = recon_loss + self.grad_loss_weight * grad_loss + self.beta * kl_loss + self.channel_rmse_weight * rmse_loss_norm
+            loss = recon_loss + self.grad_loss_weight * grad_loss + self.beta * kl_loss + self.channel_rmse_weight * rmse_loss_norm + self.domain_loss_weight * domain_loss
 
             if torch.isnan(loss).any() or torch.isinf(loss).any():
                 if self.is_master:
@@ -405,12 +441,16 @@ class FSDPUNetAlignTrainer(FSDPUNetTrainer):
 
             if self.is_master:
                 z500_raw = float(rmse_dict.get("z500", 0.0))
-                pbar.set_postfix({
+                postfix = {
                     "loss": f"{float(loss.detach()):.4f}",
                     "recon": f"{float(recon_loss.detach()):.4f}",
                     "channelrmse": f"{weighted_rmse_raw:.4f}",
                     "z500": f"{z500_raw:.4f}",
-                })
+                }
+                if self.using_dann and domain_logits is not None:
+                    dacc = float((domain_logits.argmax(dim=1) == domains).float().mean())
+                    postfix["Dacc"] = f"{dacc:.2f}"
+                pbar.set_postfix(postfix)
                 if batch_idx % 10 == 0 and self.writer is not None:
                     step = epoch * len(self.trainlo) + batch_idx
                     self.writer.add_scalar("Loss/batch/total", float(loss.detach()), step)
@@ -421,6 +461,10 @@ class FSDPUNetAlignTrainer(FSDPUNetTrainer):
                     self.writer.add_scalar("Align/batch/weighted_rmse_raw", weighted_rmse_raw, step)
                     for ch, v in rmse_dict.items():
                         self.writer.add_scalar(f"Align/batch/channel_rmse/{ch}", v, step)
+                    if self.using_dann:
+                        self.writer.add_scalar("DANN/batch/domain_loss", float(domain_loss.detach()), step)
+                        self.writer.add_scalar("DANN/batch/domain_acc", dacc, step)
+                        self.writer.add_scalar("DANN/batch/grl_lambda", grl_lambda, step)
 
         if num_batches == 0:
             avg_loss = 0.0

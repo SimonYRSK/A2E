@@ -9,6 +9,8 @@ from timm.layers.helpers import to_2tuple
 from timm.models.swin_transformer_v2 import SwinTransformerV2Stage
 from einops import rearrange
 
+from models.dann import DomainClassifier
+
 class ModuleFactory:
     def create_block(dim, out_dim, depth, input_resolution, window_size, **kwargs):
 
@@ -62,31 +64,31 @@ def get_pad2d(input_resolution, window_size):
     return padding[: 4]
 
 
-def time_to_features(timestamp, height: int, width: int) -> np.ndarray:
+def time_to_features(timestamp, height: int, width: int, num_channels: int = 4) -> np.ndarray:
     dt = pd.Timestamp(str(timestamp))
-    month = dt.month
-    day = dt.day
-    hour = dt.hour
+    # 年相位：一年中的第几天 + 小时，归一化到 [0, 1]
+    year_phase = (dt.dayofyear - 1 + dt.hour / 24.0) / 366.0
 
-    month_sin = np.sin(2 * np.pi * month / 12.0)
-    month_cos = np.cos(2 * np.pi * month / 12.0)
-    day_sin = np.sin(2 * np.pi * day / 31.0)
-    day_cos = np.cos(2 * np.pi * day / 31.0)
+    features = []
+    for i in range(num_channels):
+        freq = 2 ** (i // 2)
+        if i % 2 == 0:
+            features.append(np.sin(2 * np.pi * freq * year_phase))
+        else:
+            features.append(np.cos(2 * np.pi * freq * year_phase))
 
-    time_features = np.array(
-        [month_sin, month_cos, day_sin, day_cos], dtype=np.float32
-    ).reshape(4, 1, 1)
-    time_features = np.broadcast_to(time_features, (4, height, width))
+    time_features = np.array(features, dtype=np.float32).reshape(-1, 1, 1)
+    time_features = np.broadcast_to(time_features, (num_channels, height, width))
     return time_features
 
 
-def time_to_features_batch(timestamps, height: int, width: int, device: torch.device) -> torch.Tensor:
+def time_to_features_batch(timestamps, height: int, width: int, device: torch.device, num_channels: int = 4) -> torch.Tensor:
     if isinstance(timestamps, (list, tuple)):
         ts_list = list(timestamps)
     else:
         ts_list = [str(t) for t in timestamps]
 
-    features = [time_to_features(ts, height, width) for ts in ts_list]
+    features = [time_to_features(ts, height, width, num_channels) for ts in ts_list]
     features = np.stack(features, axis=0)
     return torch.from_numpy(features).to(device)
 
@@ -181,6 +183,8 @@ class UNetEncoder(nn.Module):
         dims=None,
         dropout_rate: float = 0.0,
         use_residual_blocks: bool = True,
+        time_dim=None,
+        source_dim=None,
     ):
         super().__init__()
         self.num_stages = num_stages
@@ -222,6 +226,22 @@ class UNetEncoder(nn.Module):
         self.swin_stages = nn.ModuleList()
         self.down_blocks = nn.ModuleList()
 
+        # Per-stage time projection: 1x1 conv projects time_dim → stage_dim
+        self.stage_time_projs = nn.ModuleList()
+        for i in range(num_stages):
+            if time_dim is not None:
+                self.stage_time_projs.append(nn.Conv2d(time_dim, self.dims[i], kernel_size=1))
+            else:
+                self.stage_time_projs.append(nn.Identity())
+
+        # Per-stage source projection: 1x1 conv projects source_dim → stage_dim
+        self.stage_source_projs = nn.ModuleList()
+        for i in range(num_stages):
+            if source_dim is not None:
+                self.stage_source_projs.append(nn.Conv2d(source_dim, self.dims[i], kernel_size=1))
+            else:
+                self.stage_source_projs.append(nn.Identity())
+
         for i in range(num_stages):
             ch = self.dims[i]
             if self.use_residual_blocks:
@@ -253,10 +273,22 @@ class UNetEncoder(nn.Module):
             if i < num_stages - 1:
                 self.down_blocks.append(Downblock(self.dims[i], self.dims[i + 1]))
 
-    def forward(self, x):
+    def forward(self, x, time_feats=None, source_feats=None):
         skips = []
         h = x
         for i in range(self.num_stages):
+            # Time fusion: project time to current stage dim and spatial resolution
+            if time_feats is not None:
+                t_h, t_w = self.stage_resolutions[i]
+                t = F.interpolate(time_feats, size=(t_h, t_w), mode='bilinear', align_corners=False)
+                h = h + self.stage_time_projs[i](t)
+
+            # Source fusion: project source to current stage dim and spatial resolution
+            if source_feats is not None:
+                s_h, s_w = self.stage_resolutions[i]
+                s = F.interpolate(source_feats, size=(s_h, s_w), mode='bilinear', align_corners=False)
+                h = h + self.stage_source_projs[i](s)
+
             ch = self.dims[i]
             for rb in self.res_blocks[i]:
                 if self.using_checkpoints:
@@ -366,12 +398,18 @@ class UNet(nn.Module):
         dropout_rate: float = 0.0,
         use_skip_connections: bool = True,
         use_residual_blocks: bool = True,
+        time_dim=None,
+        source_dim=None,
+        using_dann: bool = False,
+        dann_hidden_dim: int = 256,
+        dann_num_domains: int = 2,
         **kwargs,
     ):
         super().__init__()
         window_size = to_2tuple(window_size)
 
         self.using_kl = using_kl
+        self.using_dann = using_dann
 
         if dims is None:
             dims = [dim] * num_stages
@@ -392,6 +430,8 @@ class UNet(nn.Module):
             dims=dims,
             dropout_rate=dropout_rate,
             use_residual_blocks=use_residual_blocks,
+            time_dim=time_dim,
+            source_dim=source_dim,
         )
 
         self.decoder = UNetDecoder(
@@ -411,8 +451,25 @@ class UNet(nn.Module):
             self.mu_head = nn.Conv2d(bottleneck_ch, bottleneck_ch, kernel_size=3, padding=1)
             self.logvar_head = nn.Conv2d(bottleneck_ch, bottleneck_ch, kernel_size=3, padding=1)
 
-    def forward(self, x):
-        bottleneck, skips = self.encoder(x)
+        # DANN 域分类器：挂在 encoder bottleneck 之后，判断 embedding 来自哪个源域
+        if using_dann:
+            bottleneck_ch = dims[-1]
+            self.domain_classifier = DomainClassifier(
+                in_dim=bottleneck_ch,
+                hidden_dim=dann_hidden_dim,
+                num_domains=dann_num_domains,
+            )
+        else:
+            self.domain_classifier = None
+
+    def forward(self, x, time_feats=None, source_feats=None, domains=None, grl_lambda=1.0):
+        bottleneck, skips = self.encoder(x, time_feats=time_feats, source_feats=source_feats)
+
+        # DANN: 从 bottleneck 池化后经域分类器预测源域
+        domain_logits = None
+        if self.domain_classifier is not None and domains is not None:
+            z_pool = bottleneck.mean(dim=[2, 3])
+            domain_logits = self.domain_classifier(z_pool, lambda_=grl_lambda)
 
         if self.using_kl:
             mu = self.mu_head(bottleneck)
@@ -421,9 +478,13 @@ class UNet(nn.Module):
             eps = torch.randn_like(std)
             z = mu + eps * std
             out = self.decoder(z, skips)
+            if domain_logits is not None:
+                return out, mu, log_var, domain_logits
             return out, mu, log_var
         else:
             out = self.decoder(bottleneck, skips)
+            if domain_logits is not None:
+                return out, domain_logits
             return out
 
 
@@ -483,16 +544,15 @@ class A2E(nn.Module):
         using_time_embedding = False,
         using_source_embedding = False,
         num_sources = 1,
-        source_embed_dim = 4,
-        using_domain_embedding = None,
-        num_domains = None,
-        domain_embed_dim = None,
+        source_embed_dim = None,
         res_per_stage = [1, 2, 4],
         channels=None,
         using_kl: bool = False,
         dropout_rate: float = 0.0,
         use_skip_connections: bool = True,
         use_residual_blocks: bool = True,
+        using_dann: bool = False,
+        dann_hidden_dim: int = 256,
         **kwargs
 
     ):
@@ -503,20 +563,16 @@ class A2E(nn.Module):
         self.img_size = img_size
         self.using_checkpoints = using_checkpoints
         self.using_time_embedding = using_time_embedding
-        if using_domain_embedding is not None:
-            using_source_embedding = bool(using_domain_embedding)
-        if num_domains is not None:
-            num_sources = int(num_domains)
-        if domain_embed_dim is not None:
-            source_embed_dim = int(domain_embed_dim)
 
         self.using_source_embedding = using_source_embedding
         self.num_sources = num_sources
+        if source_embed_dim is None:
+            source_embed_dim = in_chans
         self.source_embed_dim = source_embed_dim
         self.using_kl = using_kl
+        self.using_dann = using_dann
 
-        self.time_channels = 4 if using_time_embedding else 0
-        self.source_channels = source_embed_dim if using_source_embedding else 0
+        self.time_channels = in_chans if using_time_embedding else 0
 
         input_resolution = int(img_size[0] / patch_size[0]), int(img_size[1] / patch_size[1])
 
@@ -527,18 +583,27 @@ class A2E(nn.Module):
             dims = list(channels)
         self.dims = dims
 
-        # Learned source-type embedding table: one vector per source domain,
-        # expanded to (B, source_embed_dim, H, W) and concatenated alongside
-        # time features before patch embedding.
+        # Learned source-type embedding: one vector per source domain,
+        # expanded to (B, source_embed_dim, H, W) and fused via 1x1 conv projection.
         if using_source_embedding and num_sources > 0:
             self.source_embed = nn.Embedding(num_sources, source_embed_dim)
+            self.input_source_proj = nn.Conv2d(source_embed_dim, in_chans, kernel_size=1)
         else:
             self.source_embed = None
+            self.input_source_proj = None
 
-        # Patch embedding input channels: data + time features + source embedding
-        total_in_chans = in_chans + self.time_channels + self.source_channels
+        # Time projection: fuse time features with image via 1x1 conv (no concat)
+        if using_time_embedding:
+            self.input_time_proj = nn.Conv2d(in_chans, in_chans, kernel_size=1)
+        else:
+            self.input_time_proj = None
+
+        # Patch embedding: data only (time & source fused via projection, not concat)
+        total_in_chans = in_chans
         self.patch_emb = PatchEmbedding(img_size, patch_size, total_in_chans, self.dims[0])
 
+        encoder_time_dim = self.time_channels if using_time_embedding else None
+        encoder_source_dim = source_embed_dim if using_source_embedding else None
         self.mid_layer = UNet(
             self.dims[0],
             num_groups,
@@ -554,12 +619,17 @@ class A2E(nn.Module):
             dropout_rate=dropout_rate,
             use_skip_connections=use_skip_connections,
             use_residual_blocks=use_residual_blocks,
+            time_dim=encoder_time_dim,
+            source_dim=encoder_source_dim,
+            using_dann=using_dann,
+            dann_hidden_dim=dann_hidden_dim,
+            dann_num_domains=num_sources,
         )
 
         self.patch_head = PatchHead(self.dims[0], self.out_chans, patch_size)
 
 
-    def forward(self, x, times=None, domains=None, source_idx=None):
+    def forward(self, x, times=None, domains=None, source_idx=None, grl_lambda=1.0):
         """Forward pass.
 
         Args:
@@ -567,33 +637,48 @@ class A2E(nn.Module):
             times: Batch of time strings, used for time embedding [B]
             domains: Source domain indices [B], dtype long.
             source_idx: Backward-compatible alias for domains.
-                        Each index selects a learned embedding vector that tells
-                        the encoder which source (GFS=0, HRES=1, CMA=2, ...)
-                        the current sample comes from.
+            grl_lambda: GRL 梯度反转系数，仅 using_dann=True 时生效。
         """
         B, C, H, W = x.shape
 
+        time_feats = None
         if self.using_time_embedding and times is not None:
-            time_feats = time_to_features_batch(times, H, W, x.device)
-            x = torch.cat([x, time_feats], dim=1)
+            time_feats = time_to_features_batch(times, H, W, x.device, num_channels=self.time_channels)
+            x = x + self.input_time_proj(time_feats)
 
         if domains is None:
             domains = source_idx
 
+        source_feats = None
         if self.using_source_embedding and domains is not None and self.source_embed is not None:
             source_emb = self.source_embed(domains)
             source_feats = source_emb[:, :, None, None].expand(B, -1, H, W)
-            x = torch.cat([x, source_feats], dim=1)
+            x = x + self.input_source_proj(source_feats)
 
         if self.using_checkpoints:
             x_patch = checkpoint.checkpoint(self.patch_emb, x, use_reentrant=False)
         else:
             x_patch = self.patch_emb(x)
 
-        if self.using_kl:
-            mid_out, mu, log_var = self.mid_layer(x_patch)
+        result = self.mid_layer(
+            x_patch,
+            time_feats=time_feats,
+            source_feats=source_feats,
+            domains=domains,
+            grl_lambda=grl_lambda,
+        )
+
+        # 解包 UNet 返回值
+        if self.using_kl and self.using_dann:
+            mid_out, mu, log_var, domain_logits = result
+        elif self.using_kl:
+            mid_out, mu, log_var = result
+            domain_logits = None
+        elif self.using_dann:
+            mid_out, domain_logits = result
         else:
-            mid_out = self.mid_layer(x_patch)
+            mid_out = result
+            domain_logits = None
 
         if self.using_checkpoints:
             x = checkpoint.checkpoint(self.patch_head, mid_out, use_reentrant=False)
@@ -602,6 +687,8 @@ class A2E(nn.Module):
 
         x = F.interpolate(x, size=self.img_size, mode='bilinear', align_corners=False)
         if self.using_kl:
-            return x, mu, log_var
+            return x, mu, log_var, domain_logits
+        elif self.using_dann:
+            return x, domain_logits
         else:
             return x
