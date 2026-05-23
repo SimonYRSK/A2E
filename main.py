@@ -196,9 +196,13 @@ def main():
     train_sampler = DistributedSampler(train_set, num_replicas=world_size, rank=rank, shuffle=True)
     val_sampler = DistributedSampler(val_set, num_replicas=world_size, rank=rank, shuffle=False)
 
+    batch_size = 8
+    base_lr = 2e-4
+
+
     train_loader = DataLoader(
         train_set,
-        batch_size=8,
+        batch_size=batch_size,
         shuffle=False,
         sampler=train_sampler,
         num_workers=4,
@@ -210,7 +214,7 @@ def main():
 
     val_loader = DataLoader(
         val_set,
-        batch_size=8,
+        batch_size=batch_size,
         shuffle=False,
         sampler=val_sampler,
         num_workers=4,
@@ -222,8 +226,8 @@ def main():
 
     # DANN: 域对抗训练开关。开启后在 encoder bottleneck 上施加域分类损失，
     # 迫使不同源域的中间表示不可分辨。
-    using_dann = True
-    domain_loss_weight = 0.1
+    using_dann = False
+    domain_loss_weight = 1e-3
     dann_gamma = 10.0
 
     base_model = A2E(
@@ -273,7 +277,7 @@ def main():
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=4e-4,
+        lr=base_lr,
         weight_decay=2e-5,
         betas=(0.9, 0.999),
     )
@@ -295,15 +299,15 @@ def main():
         epochs=num_epochs,
         device=device,
         beta=1e-4,
-        tb_dir="/home/ximutian/tensorboard_logs/A2E_0520",
-        save_dir="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/checkpoints/A2E_0520",
+        tb_dir="/home/ximutian/tensorboard_logs/A2E_0523",
+        save_dir="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/checkpoints/A2E_0523",
         save_interval=1,
         use_amp=False,
         rank=rank,
         world_size=world_size,
         kl_anneal=False,
         kl_anneal_epochs=7,
-        plot_root="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/channelpics/A2E_0520",
+        plot_root="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/channelpics/A2E_0523",
         recon_loss_type="l1",
         charbonnier_eps=1e-3,
         use_grad_loss=True,
