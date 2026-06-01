@@ -13,10 +13,10 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from data.pairset import Any2ERA5Dataset, SOURCE_REGISTRY
-from models.swinUNET import A2E
+from models.swinUNET_res import A2E
 from fuxi.fuxi_grad import UTransformer, FuXi
 from fuxi_rmse_interface import FuXiRMSEInterface, DEFAULT_CHANNEL_WEIGHTS, TARGET_RMSE_CHANNELS
-from trainers.fsdptrain_align import FSDPUNetAlignTrainer
+from trainers.fsdptrain_align_res import FSDPUNetAlignTrainer
 
 try:
     from zarr.errors import ZarrUserWarning
@@ -197,7 +197,7 @@ def main():
     val_sampler = DistributedSampler(val_set, num_replicas=world_size, rank=rank, shuffle=False)
 
     batch_size = 8
-    base_lr = 4e-4
+    base_lr = 2e-4
 
 
     train_loader = DataLoader(
@@ -332,6 +332,9 @@ def main():
 
 
 if __name__ == "__main__":
-
+    """
+    E:\myrepo\A2E\models\A2EswinUNET.py 修改这个代码 实现：2. 给我的模型中那些你认为需要加正则的部分加入一些dropout
+    """
     main()
 #export LD_LIBRARY_PATH=/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/conda_env/xmt/lib:$LD_LIBRARY_PATH
+# 下次实验先尝试res_per_stage=[1, 1, 0], 之后再次尝试deptht=[0, 0, 2]，看看在encoder上完全去掉resblock对性能的影响，同时decoder上适当增加resblock数量是否能弥补性能损失。

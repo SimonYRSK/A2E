@@ -197,7 +197,7 @@ def main():
     val_sampler = DistributedSampler(val_set, num_replicas=world_size, rank=rank, shuffle=False)
 
     batch_size = 8
-    base_lr = 2e-4
+    base_lr = 4e-4
 
 
     train_loader = DataLoader(
@@ -325,16 +325,13 @@ def main():
     )
 
     try:
-        trainer.train(resume_path=None, only_model=False)
+        trainer.train(resume_path="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/checkpoints/A2E_0523/checkpoint_epoch_63.pth", only_model=False)
     finally:
         fuxi_rmse_interface.close()
         dist.destroy_process_group()
 
 
 if __name__ == "__main__":
-    """
-    E:\myrepo\A2E\models\A2EswinUNET.py 修改这个代码 实现：2. 给我的模型中那些你认为需要加正则的部分加入一些dropout
-    """
+
     main()
 #export LD_LIBRARY_PATH=/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/conda_env/xmt/lib:$LD_LIBRARY_PATH
-# 下次实验先尝试res_per_stage=[1, 1, 0], 之后再次尝试deptht=[0, 0, 2]，看看在encoder上完全去掉resblock对性能的影响，同时decoder上适当增加resblock数量是否能弥补性能损失。

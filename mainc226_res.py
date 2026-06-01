@@ -13,7 +13,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 from data.pairsetc226 import Any2ERA5Dataset, SOURCE_REGISTRY
-from models.swinUNET import A2E
+from models.swinUNET_res import A2E
 from trainers.fsdptrain import FSDPUNetTrainer
 
 import numpy as np
