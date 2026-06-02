@@ -147,26 +147,13 @@ def main():
     if cma_path:
         source_configs.append(("cma", cma_path, SOURCE_REGISTRY.get("cma", 2)))
 
-    # 各源独立指定训练/验证日期范围，不再强制交集对齐
-    SOURCE_DATE_RANGES = {
-        "gfs": {
-            "train_start": "2022-01-01 00:00:00", "train_end": "2024-12-31 18:00:00",
-            "val_start":   "2025-01-01 00:00:00", "val_end":   "2025-11-20 18:00:00",
-        },
-        "hres": {
-            "train_start": "2024-01-01 00:00:00", "train_end": "2024-12-31 18:00:00",
-            "val_start":   "2025-01-01 00:00:00", "val_end":   "2025-11-20 18:00:00",
-        },
-    }
-
     train_sets = []
     val_sets = []
     for source_name, source_path, source_idx in source_configs:
-        dates = SOURCE_DATE_RANGES.get(source_name, SOURCE_DATE_RANGES["gfs"])
         train_sets.append(
             Any2ERA5Dataset(
-                start=dates["train_start"],
-                end=dates["train_end"],
+                start="2024-01-01 00:00:00",
+                end="2024-12-31 18:00:00",
                 x_path=source_path,
                 y_path=y_path,
                 source_name=source_name,
@@ -178,8 +165,8 @@ def main():
 
         val_sets.append(
             Any2ERA5Dataset(
-                start=dates["val_start"],
-                end=dates["val_end"],
+                start="2025-01-01 00:00:00",
+                end="2025-11-20 18:00:00",
                 x_path=source_path,
                 y_path=y_path,
                 source_name=source_name,
@@ -196,13 +183,9 @@ def main():
     train_sampler = DistributedSampler(train_set, num_replicas=world_size, rank=rank, shuffle=True)
     val_sampler = DistributedSampler(val_set, num_replicas=world_size, rank=rank, shuffle=False)
 
-    batch_size = 8
-    base_lr = 2e-4
-
-
     train_loader = DataLoader(
         train_set,
-        batch_size=batch_size,
+        batch_size=8,
         shuffle=False,
         sampler=train_sampler,
         num_workers=4,
@@ -214,7 +197,7 @@ def main():
 
     val_loader = DataLoader(
         val_set,
-        batch_size=batch_size,
+        batch_size=8,
         shuffle=False,
         sampler=val_sampler,
         num_workers=4,
@@ -223,12 +206,6 @@ def main():
         collate_fn=custom_collate,
         prefetch_factor=1,
     )
-
-    # DANN: 域对抗训练开关。开启后在 encoder bottleneck 上施加域分类损失，
-    # 迫使不同源域的中间表示不可分辨。
-    using_dann = False
-    domain_loss_weight = 1e-3
-    dann_gamma = 10.0
 
     base_model = A2E(
         img_size=(721, 1440),
@@ -251,7 +228,6 @@ def main():
         dropout_rate=0.1,
         use_skip_connections=True,
         use_residual_blocks=True,
-        using_dann=using_dann,
     )
 
     if is_master:
@@ -277,7 +253,7 @@ def main():
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=base_lr,
+        lr=4e-4,
         weight_decay=2e-5,
         betas=(0.9, 0.999),
     )
@@ -299,15 +275,15 @@ def main():
         epochs=num_epochs,
         device=device,
         beta=1e-4,
-        tb_dir="/home/ximutian/tensorboard_logs/A2E_0523",
-        save_dir="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/checkpoints/A2E_0523",
+        tb_dir="/home/ximutian/tensorboard_logs/A2E_0520",
+        save_dir="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/checkpoints/A2E_0520",
         save_interval=1,
         use_amp=False,
         rank=rank,
         world_size=world_size,
         kl_anneal=False,
         kl_anneal_epochs=7,
-        plot_root="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/channelpics/A2E_0523",
+        plot_root="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/channelpics/A2E_0520",
         recon_loss_type="l1",
         charbonnier_eps=1e-3,
         use_grad_loss=True,
@@ -319,9 +295,6 @@ def main():
         channel_rmse_weight=1e-3,
         rmse_every_n_steps=1,
         rmse_samples_per_batch=1,
-        using_dann=using_dann,
-        domain_loss_weight=domain_loss_weight,
-        dann_gamma=dann_gamma,
     )
 
     try:
@@ -333,8 +306,7 @@ def main():
 
 if __name__ == "__main__":
     """
-    E:\myrepo\A2E\models\A2EswinUNET.py 修改这个代码 实现：2. 给我的模型中那些你认为需要加正则的部分加入一些dropout
+    给我的align系列代码做一些改动：GFS HRES的训练数据量其实不一样 现在我是取得交集。我计划改成hres和gfs的数据量要分别指定日期 不强求他们一致。对于模型架构部分的sourceembedding 和timeembedding一样 channels初始时设置为和inchan一样的大小 不要用concat 用投影 每次通道变化的时候sourcedim一起变 然后通过投影和图像特征融合在一起
     """
     main()
 #export LD_LIBRARY_PATH=/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/conda_env/xmt/lib:$LD_LIBRARY_PATH
-# 下次实验先尝试res_per_stage=[1, 1, 0], 之后再次尝试deptht=[0, 0, 2]，看看在encoder上完全去掉resblock对性能的影响，同时decoder上适当增加resblock数量是否能弥补性能损失。

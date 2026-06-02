@@ -12,11 +12,11 @@ from torch.utils.data import DataLoader, ConcatDataset
 from torch.utils.data.distributed import DistributedSampler
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
-from data.pairset import Any2ERA5Dataset, SOURCE_REGISTRY
+from data.pairset import Any2ERA5Dataset
 from models.swinUNET_res import A2E
 from fuxi.fuxi_grad import UTransformer, FuXi
 from fuxi_rmse_interface import FuXiRMSEInterface, DEFAULT_CHANNEL_WEIGHTS, TARGET_RMSE_CHANNELS
-from trainers.fsdptrain_align_res import FSDPUNetAlignTrainer
+from trainers.fsdptrain_align import FSDPUNetAlignTrainer
 
 try:
     from zarr.errors import ZarrUserWarning
@@ -141,7 +141,8 @@ def main():
     hres_path = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/hres_2024_2025_c226_0p25_norm.zarr"
 
     # 只有一个源：HRES
-    source_configs = [("hres", hres_path, SOURCE_REGISTRY.get("hres", 0))]
+    # 单源时 source_idx 必须为 0，否则 num_sources=1 的 embedding table 会越界
+    source_configs = [("hres", hres_path, 0)]
 
     SOURCE_DATE_RANGES = {
         "hres": {
@@ -289,15 +290,15 @@ def main():
         epochs=num_epochs,
         device=device,
         beta=1e-4,
-        tb_dir="/home/ximutian/tensorboard_logs/A2E_hresonly",
-        save_dir="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/checkpoints/A2E_hresonly",
+        tb_dir="/home/ximutian/tensorboard_logs/A2E_hresonly0602_test",
+        save_dir="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/checkpoints/A2E_hresonly0602_test",
         save_interval=1,
         use_amp=False,
         rank=rank,
         world_size=world_size,
         kl_anneal=False,
         kl_anneal_epochs=7,
-        plot_root="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/channelpics/A2E_hresonly",
+        plot_root="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/channelpics/A2E_hresonly0602_test",
         recon_loss_type="l1",
         charbonnier_eps=1e-3,
         use_grad_loss=True,
