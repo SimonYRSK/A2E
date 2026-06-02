@@ -18,7 +18,7 @@ from fuxi.fuxi_grad import time_encoding
 
 TARGET_RMSE_CHANNELS = ["z500", "z850", "u200", "t2m", "u10m", "v10m", "msl", "tp", "t300"]
 
-# 重点优化 z500，同时保留其余关键变量约束（和为 1）
+
 DEFAULT_CHANNEL_WEIGHTS = {
     "z500": 0.05,
     "z850": 0.05,

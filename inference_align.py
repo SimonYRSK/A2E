@@ -1,14 +1,19 @@
 """
 A2E Multi-Source + FuXi Align Inference (40-step forecast).
 
-Supports GFS, HRES, CMA → A2E → FuXi pipeline.
-Results are saved per source domain under DEFAULT_OUTPUT_DIR/<source_name>/.
+Supports GFS, HRES, CMA → A2E → FuXi pipeline (default) or
+naive mode: source data directly → FuXi without A2E correction.
+
+Results are saved per source domain under DEFAULT_OUTPUT_DIR/<source_name>/
+(or <source_name>_naive/ in naive mode).
 
 Usage:
     python A2E/inference_align.py                          # all sources, DEFAULT_DATES
     python A2E/inference_align.py --sources gfs hres       # selected sources
     python A2E/inference_align.py --dates 20250101 20250102
     python A2E/inference_align.py --output_dir /path/to/out
+    python A2E/inference_align.py --naive                  # skip A2E, source -> FuXi directly
+    python A2E/inference_align.py --naive --sources gfs    # naive GFS only
 """
 
 import os
@@ -388,6 +393,83 @@ def run_inference_for_source(
     return rmse_list, acc_list
 
 
+def run_naive_inference_for_source(
+    init_time: pd.Timestamp,
+    source_name: str,
+    source_path: str,
+    fuxi_model,
+    era5_mean: torch.Tensor,
+    era5_std: torch.Tensor,
+    lat_weights: torch.Tensor,
+    lat_weights_norm: torch.Tensor,
+    clim_ds,
+    era5_dir: str,
+    device: torch.device,
+    channels: list,
+    z500_idx: int,
+) -> tuple:
+    """Naive FuXi inference: source data directly -> FuXi, no A2E correction.
+
+    Returns (rmse_list, acc_list) each of length FORECAST_STEPS.
+    """
+    # 1. Read source data at init time (normalized in source domain)
+    src_norm = read_source_data(source_path, init_time, channels).to(device)  # [C, H, W]
+
+    # 2. Read ERA5 at t-6h (for FuXi cold-start input)
+    t_prev = init_time - pd.Timedelta(hours=6)
+    era5_prev_norm = read_era5_normalized(era5_dir, t_prev, channels).to(device)
+
+    # 3. Denormalize BOTH with ERA5 stats (naive: assume source ~ ERA5 distribution)
+    era5_prev_phys = denormalize(era5_prev_norm, era5_mean, era5_std)
+    src_phys = denormalize(src_norm, era5_mean, era5_std)
+
+    # 4. Stack FuXi input: [ERA5(t-6h), source_raw(t0)] — no A2E
+    fuxi_input = torch.stack([era5_prev_phys, src_phys], dim=0)
+
+    # 5. Time encoding for 40 steps
+    tembs = time_encoding(init_time, FORECAST_STEPS, freq=HOURS_PER_STEP)
+    tembs = tembs.to(device=device, dtype=torch.float32)
+
+    # 6. FuXi 40-step forecast
+    with torch.no_grad():
+        outputs = fuxi_model.forward((fuxi_input, tembs))
+    outputs = outputs.squeeze(0)  # [40, 70, 721, 1440]
+
+    # 7. Per-step Z500 metrics
+    rmse_list, acc_list = [], []
+
+    pbar_steps = tqdm(range(FORECAST_STEPS),
+                      desc=f"  Steps[naive] {source_name} {init_time.strftime('%Y%m%d')}",
+                      leave=False)
+    for step in pbar_steps:
+        lead_hours = (step + 1) * HOURS_PER_STEP
+        target_time = init_time + pd.Timedelta(hours=lead_hours)
+
+        try:
+            era5_truth_norm = read_era5_normalized(era5_dir, target_time, channels).to(device)
+        except Exception:
+            rmse_list.append(np.nan)
+            acc_list.append(np.nan)
+            pbar_steps.set_postfix({"status": "truth_missing"})
+            continue
+
+        era5_truth_phys = denormalize(era5_truth_norm, era5_mean, era5_std)
+
+        z500_pred = outputs[step, z500_idx]
+        z500_truth = era5_truth_phys[z500_idx]
+
+        rmse = compute_rmse(z500_pred, z500_truth, lat_weights)
+        rmse_list.append(float(rmse.cpu()))
+
+        clim_mean = get_clim_z500(clim_ds, target_time).to(device)
+        acc = compute_acc(z500_pred, z500_truth, clim_mean, lat_weights_norm)
+        acc_list.append(float(acc.cpu()))
+
+        pbar_steps.set_postfix({"step": step + 1, "rmse": f"{rmse_list[-1]:.4f}", "acc": f"{acc_list[-1]:.4f}"})
+
+    return rmse_list, acc_list
+
+
 # ============================================================
 # Output writers
 # ============================================================
@@ -445,6 +527,8 @@ def main():
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--in_chans", type=int, default=70,
                         help="Input channels (70 for align, 165 for c226)")
+    parser.add_argument("--naive", action="store_true", default=False,
+                        help="Naive mode: skip A2E, feed source data directly to FuXi")
     args = parser.parse_args()
 
     # Resolve channels
@@ -485,9 +569,13 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
     # ---- Build models ----
-    print("Building A2E model...")
-    a2e_model = build_a2e_model(device, args.a2e_ckpt, in_chans=args.in_chans)
-    print(f"A2E loaded from {args.a2e_ckpt}")
+    a2e_model = None
+    if args.naive:
+        print("Naive mode: skipping A2E model, source data -> FuXi directly.")
+    else:
+        print("Building A2E model...")
+        a2e_model = build_a2e_model(device, args.a2e_ckpt, in_chans=args.in_chans)
+        print(f"A2E loaded from {args.a2e_ckpt}")
 
     print("Building FuXi model...")
     fuxi_model = build_fuxi_model(device, args.fuxi_dir)
@@ -510,38 +598,56 @@ def main():
 
     # ---- Run inference per source ----
     for source_name, source_idx, source_path in active_sources:
+        mode_label = f"{source_name}_naive" if args.naive else source_name
         print(f"\n{'='*60}")
-        print(f"Source: {source_name} (idx={source_idx})")
+        print(f"Source: {source_name} (idx={source_idx})  mode={'naive' if args.naive else 'A2E'}")
         print(f"Data path: {source_path}")
         print(f"Dates: {len(args.dates)}")
         print(f"{'='*60}")
 
-        src_output_dir = os.path.join(args.output_dir, source_name)
+        src_output_dir = os.path.join(args.output_dir, source_name + ("_naive" if args.naive else ""))
         os.makedirs(src_output_dir, exist_ok=True)
 
         all_results = {}
 
-        for date_str in tqdm(args.dates, desc=f"Dates [{source_name}]"):
+        for date_str in tqdm(args.dates, desc=f"Dates [{mode_label}]"):
             init_time = pd.Timestamp(f"{date_str} 00:00:00")
 
             try:
-                rmse_list, acc_list = run_inference_for_source(
-                    init_time=init_time,
-                    source_name=source_name,
-                    source_idx=source_idx,
-                    source_path=source_path,
-                    a2e_model=a2e_model,
-                    fuxi_model=fuxi_model,
-                    era5_mean=era5_mean,
-                    era5_std=era5_std,
-                    lat_weights=lat_weights,
-                    lat_weights_norm=lat_weights_norm,
-                    clim_ds=clim_ds,
-                    era5_dir=args.era5_dir,
-                    device=device,
-                    channels=channels,
-                    z500_idx=z500_idx,
-                )
+                if args.naive:
+                    rmse_list, acc_list = run_naive_inference_for_source(
+                        init_time=init_time,
+                        source_name=source_name,
+                        source_path=source_path,
+                        fuxi_model=fuxi_model,
+                        era5_mean=era5_mean,
+                        era5_std=era5_std,
+                        lat_weights=lat_weights,
+                        lat_weights_norm=lat_weights_norm,
+                        clim_ds=clim_ds,
+                        era5_dir=args.era5_dir,
+                        device=device,
+                        channels=channels,
+                        z500_idx=z500_idx,
+                    )
+                else:
+                    rmse_list, acc_list = run_inference_for_source(
+                        init_time=init_time,
+                        source_name=source_name,
+                        source_idx=source_idx,
+                        source_path=source_path,
+                        a2e_model=a2e_model,
+                        fuxi_model=fuxi_model,
+                        era5_mean=era5_mean,
+                        era5_std=era5_std,
+                        lat_weights=lat_weights,
+                        lat_weights_norm=lat_weights_norm,
+                        clim_ds=clim_ds,
+                        era5_dir=args.era5_dir,
+                        device=device,
+                        channels=channels,
+                        z500_idx=z500_idx,
+                    )
 
                 all_results[date_str] = (rmse_list, acc_list)
                 write_date_results(src_output_dir, date_str, rmse_list, acc_list)
@@ -550,19 +656,19 @@ def main():
                 s1_acc = acc_list[0] if not np.isnan(acc_list[0]) else float("nan")
                 s40_rmse = rmse_list[-1] if not np.isnan(rmse_list[-1]) else float("nan")
                 s40_acc = acc_list[-1] if not np.isnan(acc_list[-1]) else float("nan")
-                print(f"  [{source_name}] {date_str}: "
+                print(f"  [{mode_label}] {date_str}: "
                       f"Step1 RMSE={s1_rmse:.4f} ACC={s1_acc:.4f}  "
                       f"Step40 RMSE={s40_rmse:.4f} ACC={s40_acc:.4f}")
 
             except Exception as e:
-                print(f"  [{source_name}] {date_str}: FAILED - {e}")
+                print(f"  [{mode_label}] {date_str}: FAILED - {e}")
                 import traceback
                 traceback.print_exc()
 
         if all_results:
             write_summary(src_output_dir, all_results)
-            print(f"\n[{source_name}] Results saved to {src_output_dir}")
-            print(f"[{source_name}] Summary: {os.path.join(src_output_dir, 'summary_all_dates.txt')}")
+            print(f"\n[{mode_label}] Results saved to {src_output_dir}")
+            print(f"[{mode_label}] Summary: {os.path.join(src_output_dir, 'summary_all_dates.txt')}")
 
     torch.cuda.empty_cache()
     print("\nAll sources complete.")
