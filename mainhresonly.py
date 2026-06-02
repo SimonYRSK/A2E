@@ -18,6 +18,7 @@ from fuxi.fuxi_grad import UTransformer, FuXi
 from fuxi_rmse_interface import FuXiRMSEInterface, DEFAULT_CHANNEL_WEIGHTS, TARGET_RMSE_CHANNELS
 from trainers.fsdptrain_align import FSDPUNetAlignTrainer
 
+
 try:
     from zarr.errors import ZarrUserWarning
 except Exception:
@@ -143,6 +144,7 @@ def main():
     # 只有一个源：HRES
     # 单源时 source_idx 必须为 0，否则 num_sources=1 的 embedding table 会越界
     source_configs = [("hres", hres_path, 0)]
+
 
     SOURCE_DATE_RANGES = {
         "hres": {
