@@ -1,122 +1,44 @@
 """
-Plot averaged ACC/RMSE curves, comparing A2E experiments and align results.
+Plot per-source ACC/RMSE curves: for each source (GFS, HRES, etc.), one figure
+containing whatever curves are available:
 
-Supports two result formats:
+  1. ERA5 (ref)      — Naive ERA5 (ERA5 → FuXi baseline)
+  2. Naive {SOURCE}   — source directly → FuXi (no A2E)
+  3. A2E ({SOURCE})   — source → A2E → FuXi
 
-1. Old model (G2E format) – per-date txt under::
+Each curve is independently averaged across its own available dates.
+Missing curves are simply omitted from the figure.
+A source with no data at all is skipped.
 
-       {metrics_root}/{tag}/{date}/metrics_{tag}_{date}.txt
+Data layout expected::
 
-   Each line::
+    {align_root}/
+        {source}/            ← A2E results:  {date}_{suffix}.txt
 
-       Step N: Naive ERA5 RMSE=X.XX, ACC=Y.YY | Naive GFS RMSE=X.XX, ACC=Y.YY | GFS2ERA5 RMSE=X.XX, ACC=Y.YY
-
-2. New A2E align (inference_align.py) – per-source subdirs under::
-
-       {align_root}/{source_name}/*_{suffix}.txt
-
-   Each line (space-separated)::
-
-       step  lead_hours  rmse  acc
+    {naive_root}/
+        {source}_naive/      ← Naive results: {date}_{suffix}.txt
+        era5_naive/          ← Naive ERA5 results: {date}_{suffix}.txt
 
 Usage::
 
-    # Compare two A2E experiments vs FuXi baseline
-    python A2E/plotalign.py \\
-        --metrics_root /path/to/metrics \\
-        --tags A2E_0520 A2E_0523 \\
-        --names "A2E 0520" "A2E 0523" \\
-        --dates 20250101 20250115 20250131 \\
-        --align_root /path/to/inference_results/A2E_0523 \\
+    python A2E/plotalign.py \
+        --align_root /path/to/inference_results/A2E_0523 \
+        --naive_root /path/to/inference_results \
+        --sources gfs hres \
         --output_dir /path/to/plots
-
-    # Just plot align results (no old model comparison)
-    python A2E/plotalign.py \\
-        --align_root /path/to/inference_results/A2E_0523
 """
 
 import argparse
 import os
-import re
 import glob
-from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
 # ---------------------------------------------------------------------------
-# Old-model line parser (G2E format)
-# ---------------------------------------------------------------------------
-LINE_RE = re.compile(
-    r"Step\s+(?P<step>\d+):"
-    r"Naive ERA5 RMSE=(?P<rmse_era5>[0-9.]+), ACC=(?P<acc_era5>[0-9.]+) \| "
-    r"Naive GFS RMSE=(?P<rmse_naive>[0-9.]+), ACC=(?P<acc_naive>[0-9.]+) \| "
-    r"GFS2ERA5 RMSE=(?P<rmse_trans>[0-9.]+), ACC=(?P<acc_trans>[0-9.]+)"
-)
-
-
-def parse_old_metrics_txt(txt_path):
-    steps = []
-    rmse_era5, rmse_naive, rmse_trans = [], [], []
-    acc_era5, acc_naive, acc_trans = [], [], []
-    with open(txt_path, "r", encoding="utf-8") as f:
-        for line in f:
-            m = LINE_RE.search(line)
-            if not m:
-                continue
-            steps.append(int(m.group("step")))
-            rmse_era5.append(float(m.group("rmse_era5")))
-            rmse_naive.append(float(m.group("rmse_naive")))
-            rmse_trans.append(float(m.group("rmse_trans")))
-            acc_era5.append(float(m.group("acc_era5")))
-            acc_naive.append(float(m.group("acc_naive")))
-            acc_trans.append(float(m.group("acc_trans")))
-    return {
-        "steps": steps,
-        "rmse_era5": rmse_era5, "rmse_naive": rmse_naive, "rmse_trans": rmse_trans,
-        "acc_era5": acc_era5, "acc_naive": acc_naive, "acc_trans": acc_trans,
-    }
-
-
-def load_old_series(metrics_root, tag, date):
-    txt_path = Path(metrics_root) / tag / date / f"metrics_{tag}_{date}.txt"
-    if not txt_path.exists():
-        raise FileNotFoundError(f"Missing file: {txt_path}")
-    return parse_old_metrics_txt(str(txt_path))
-
-
-def average_old_metrics(metrics_root, tag, dates):
-    all_metrics = []
-    for date in dates:
-        try:
-            data = load_old_series(metrics_root, tag, date)
-            all_metrics.append(data)
-        except Exception as e:
-            print(f"  Old format skip {tag} {date}: {e}")
-    if not all_metrics:
-        raise RuntimeError(f"No valid data for tag={tag}")
-    steps = all_metrics[0]["steps"]
-    n = len(steps)
-
-    def stack_and_mean(key):
-        arr = np.stack([m[key] for m in all_metrics if len(m[key]) == n])
-        return arr.mean(axis=0)
-
-    return {
-        "steps": steps,
-        "rmse_era5": stack_and_mean("rmse_era5"),
-        "rmse_naive": stack_and_mean("rmse_naive"),
-        "rmse_trans": stack_and_mean("rmse_trans"),
-        "acc_era5": stack_and_mean("acc_era5"),
-        "acc_naive": stack_and_mean("acc_naive"),
-        "acc_trans": stack_and_mean("acc_trans"),
-    }
-
-
-# ---------------------------------------------------------------------------
-# New A2E align parser (inference_align.py output)
+# A2E / Naive txt parser (inference_align.py output)
 # ---------------------------------------------------------------------------
 def parse_a2e_txt(txt_path):
-    """Parse date_z500.txt produced by inference_align.py.
+    """Parse ``{date}_{suffix}.txt`` produced by inference_align.py.
 
     Format::
 
@@ -138,153 +60,139 @@ def parse_a2e_txt(txt_path):
     return {"steps": steps, "rmse": rmses, "acc": accs}
 
 
-def average_new_align_metrics(align_root, suffix="z500"):
-    """Average across all per-date files under align_root matching *_<suffix>.txt."""
-    pattern = os.path.join(align_root, f"*_{suffix}.txt")
-    files = glob.glob(pattern)
-    all_metrics = []
-    for f in files:
-        if "summary" in os.path.basename(f):
+def _extract_date_from_filename(fname, suffix):
+    """Filename pattern: ``{date}_{suffix}.txt`` → date (8-digit string)."""
+    basename = os.path.basename(fname)
+    expected_suffix = f"_{suffix}.txt"
+    if not basename.endswith(expected_suffix):
+        return None
+    date_str = basename[:-len(expected_suffix)]
+    if len(date_str) == 8 and date_str.isdigit():
+        return date_str
+    return None
+
+
+def load_per_date_from_dir(dir_path, suffix="z500"):
+    """Load all per-date ``*_{suffix}.txt`` files from a directory.
+
+    Returns ``{date_str: {steps, rmse, acc}}``.
+    """
+    if not os.path.isdir(dir_path):
+        return {}
+    pattern = os.path.join(dir_path, f"*_{suffix}.txt")
+    result = {}
+    for f in glob.glob(pattern):
+        date_str = _extract_date_from_filename(f, suffix)
+        if date_str is None:
             continue
         try:
             data = parse_a2e_txt(f)
             if len(data["steps"]) > 0:
-                all_metrics.append(data)
+                result[date_str] = data
         except Exception as e:
             print(f"  Skip {f}: {e}")
-    if not all_metrics:
-        raise RuntimeError(f"No valid align data in {align_root}")
+    return result
 
-    steps = all_metrics[0]["steps"]
-    n = len(steps)
 
-    def stack_and_mean(key):
-        arr = np.stack([m[key] for m in all_metrics if len(m[key]) == n])
-        return arr.mean(axis=0)
+# ---------------------------------------------------------------------------
+# Independent averaging (each curve averaged across its own dates)
+# ---------------------------------------------------------------------------
+def average_across_dates(per_date):
+    """Average metrics independently across all available dates.
+
+    Returns ``{steps, rmse, acc, n_dates}`` or **None** if empty.
+    """
+    if not per_date:
+        return None
+    dates = sorted(per_date.keys())
+    ref_date = dates[0]
+    n_steps = len(per_date[ref_date]["steps"])
+
+    # Keep only dates with matching step count
+    valid = []
+    for d in dates:
+        if len(per_date[d]["steps"]) == n_steps:
+            valid.append(d)
+    if not valid:
+        return None
+
+    rmse_arr = np.stack([np.array(per_date[d]["rmse"], dtype=np.float64)
+                          for d in valid])
+    acc_arr = np.stack([np.array(per_date[d]["acc"], dtype=np.float64)
+                         for d in valid])
 
     return {
-        "steps": steps,
-        "rmse_trans": stack_and_mean("rmse"),
-        "acc_trans": stack_and_mean("acc"),
+        "steps": np.array(per_date[ref_date]["steps"]),
+        "rmse": rmse_arr.mean(axis=0),
+        "acc": acc_arr.mean(axis=0),
+        "n_dates": len(valid),
     }
-
-
-def average_new_align_by_source(align_root, sources, suffix="z500"):
-    """Average per-source: align_root/{source}/*_{suffix}.txt"""
-    results = {}
-    for src in sources:
-        src_dir = os.path.join(align_root, src)
-        if not os.path.isdir(src_dir):
-            print(f"  Source dir not found: {src_dir}, skipping")
-            continue
-        try:
-            results[src] = average_new_align_metrics(src_dir, suffix=suffix)
-            print(f"  Loaded align {src}: {len(results[src]['steps'])} steps")
-        except Exception as e:
-            print(f"  Failed to load align {src}: {e}")
-    return results
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _truncate_series(series, num_steps=None, interval=1):
-    total = len(series["steps"])
+def _truncate(steps, arr, num_steps=None, interval=1):
+    """Slice array to length / interval. Returns (steps, arr)."""
+    total = len(steps)
     n = total if num_steps is None else min(int(num_steps), total)
     interval = max(1, int(interval))
-    sel_idx = np.arange(0, n, interval)
-    out = {}
-    for k, v in series.items():
-        if isinstance(v, (list, np.ndarray)):
-            out[k] = np.array(v)[:n][sel_idx]
-        else:
-            out[k] = v
-    return out
+    sel = np.arange(0, n, interval)
+    return np.array(steps)[:n][sel], np.array(arr)[:n][sel]
 
 
 # ---------------------------------------------------------------------------
-# Plotting
+# Plotting — one figure per source
 # ---------------------------------------------------------------------------
-MODEL_COLORS = [
-    "tab:blue", "tab:orange", "tab:green", "tab:purple",
-    "tab:brown", "tab:pink", "tab:olive", "tab:cyan",
+# (dict_key, label_template, color, marker)
+CURVE_DEFS = [
+    ("era5",  "ERA5 (ref)",        "red",  "o"),
+    ("naive", "Naive {src}",       "gray", "s"),
+    ("a2e",   "A2E ({src})",       "blue", "d"),
 ]
 
 
-def plot_curve(
-    old_avg_by_tag,
-    new_align_by_source,
-    output_dir,
-    metric="acc",
-    num_steps=None,
-    interval=1,
-    title_suffix="z500",
-    plot_naive_gfs=True,
-    plot_naive_era5=True,
-    display_name_by_tag=None,
-):
-    if not old_avg_by_tag and not new_align_by_source:
-        raise RuntimeError("No data to plot")
+def plot_source_figure(source_name, curves, output_dir, metric,
+                       num_steps=None, interval=1):
+    """Plot available curves for one source on one figure.
 
-    # Reference steps from first available series
-    if old_avg_by_tag:
-        ref = _truncate_series(
-            next(iter(old_avg_by_tag.values())),
-            num_steps=num_steps, interval=interval,
-        )
-    else:
-        ref = _truncate_series(
-            next(iter(new_align_by_source.values())),
-            num_steps=num_steps, interval=interval,
-        )
-    steps = ref["steps"]
+    *curves* is a dict like ``{"era5": avg, "naive": avg, "a2e": avg}``
+    where each value may be None (curve skipped).
 
-    if display_name_by_tag is None:
-        display_name_by_tag = {tag: tag for tag in old_avg_by_tag}
+    Saves ``{metric}_curve_{source_name}.png``.
+    """
+    mk = "rmse" if metric == "rmse" else "acc"
+    ylabel = "RMSE" if metric == "rmse" else "ACC"
 
     plt.figure(figsize=(10, 5))
 
-    # Naive baselines (from old format – only if old data present)
-    if old_avg_by_tag and metric == "acc":
-        if plot_naive_era5 and "acc_era5" in ref:
-            plt.plot(steps, ref["acc_era5"], label="Naive ERA5", marker="o", color="red")
-        if plot_naive_gfs and "acc_naive" in ref:
-            plt.plot(steps, ref["acc_naive"], label="Naive GFS", marker="o", color="gray")
-    elif old_avg_by_tag and metric == "rmse":
-        if plot_naive_era5 and "rmse_era5" in ref:
-            plt.plot(steps, ref["rmse_era5"], label="Naive ERA5", marker="o", color="red")
-        if plot_naive_gfs and "rmse_naive" in ref:
-            plt.plot(steps, ref["rmse_naive"], label="Naive GFS", marker="o", color="gray")
+    any_plotted = False
+    date_parts = []
 
-    y_key_old = "acc_trans" if metric == "acc" else "rmse_trans"
-    y_key_new = "acc_trans" if metric == "acc" else "rmse_trans"
+    for key, label_tpl, color, marker in CURVE_DEFS:
+        avg = curves.get(key)
+        if avg is None:
+            continue
+        sel_steps, sel_vals = _truncate(avg["steps"], avg[mk],
+                                         num_steps=num_steps, interval=interval)
+        label = label_tpl.format(src=source_name.upper())
+        plt.plot(sel_steps, sel_vals, label=label,
+                 marker=marker, color=color, linewidth=2)
+        any_plotted = True
+        date_parts.append(f"{label}: {avg['n_dates']}d")
 
-    # Old model curves
-    for idx, (tag, data) in enumerate(old_avg_by_tag.items()):
-        d = _truncate_series(data, num_steps=num_steps, interval=interval)
-        c = MODEL_COLORS[idx % len(MODEL_COLORS)]
-        label = display_name_by_tag.get(tag, tag)
-        plt.plot(d["steps"], d[y_key_old], label=label, marker="x", color=c)
-
-    # New A2E align curves (per source)
-    for idx, (source_name, data) in enumerate(new_align_by_source.items()):
-        d = _truncate_series(data, num_steps=num_steps, interval=interval)
-        c = MODEL_COLORS[(len(old_avg_by_tag) + idx) % len(MODEL_COLORS)]
-        label = f"A2E ({source_name})"
-        plt.plot(d["steps"], d[y_key_new], label=label, marker="d", color=c, linewidth=2)
+    if not any_plotted:
+        plt.close()
+        return
 
     plt.xlabel("Forecast Step")
-    if metric == "acc":
-        plt.ylabel("ACC")
-        plt.title(f"Z500 ACC ({title_suffix})")
-        plt.ylim(0.34, 1.00)
-    else:
-        plt.ylabel("RMSE")
-        plt.title(f"Z500 RMSE ({title_suffix})")
+    plt.ylabel(ylabel)
+    plt.title(f"Z500 {ylabel} – {source_name.upper()}  ({', '.join(date_parts)})")
     plt.legend()
     plt.grid()
     plt.tight_layout()
-    fname = f"{metric}_curve.png"
+
+    fname = f"{metric}_curve_{source_name}.png"
     plt.savefig(os.path.join(output_dir, fname))
     plt.close()
     print(f"  Saved {os.path.join(output_dir, fname)}")
@@ -293,39 +201,35 @@ def plot_curve(
 # ---------------------------------------------------------------------------
 # Summary writer
 # ---------------------------------------------------------------------------
-def write_summary_txt(output_dir, old_avg_by_tag, new_align_by_source, display_name_by_tag=None):
+def write_summary_txt(output_dir, all_curves, sources):
+    """Write a summary table across sources with key-step RMSE / ACC."""
     summary_path = os.path.join(output_dir, "summary_average.txt")
     key_steps = [0, 9, 19, 29, 39]
-    if display_name_by_tag is None:
-        display_name_by_tag = {}
 
     with open(summary_path, "w") as f:
-        f.write("# Averaged Z500 metrics across all dates\n")
-        f.write(f"# {'Experiment':>20s}")
+        f.write("# Averaged Z500 metrics (each curve averaged independently)\n")
+        header = f"{'Curve':>24s}"
         for s in key_steps:
-            f.write(f"  S{s+1:02d}_RMSE  S{s+1:02d}_ACC")
-        f.write("\n")
+            header += f"  S{s+1:02d}_RMSE  S{s+1:02d}_ACC"
+        f.write(header + "\n")
 
-        for tag, data in old_avg_by_tag.items():
-            label = display_name_by_tag.get(tag, tag)
-            line = f"  {label:>20s}"
-            for s in key_steps:
-                if s < len(data["rmse_trans"]):
-                    line += f"  {data['rmse_trans'][s]:10.4f}  {data['acc_trans'][s]:9.4f}"
-                else:
-                    line += f"  {'N/A':>10s}  {'N/A':>9s}"
-            line += "\n"
-            f.write(line)
-
-        for src, data in new_align_by_source.items():
-            line = f"  {'A2E_' + src:>20s}"
-            for s in key_steps:
-                if s < len(data["rmse_trans"]):
-                    line += f"  {data['rmse_trans'][s]:10.4f}  {data['acc_trans'][s]:9.4f}"
-                else:
-                    line += f"  {'N/A':>10s}  {'N/A':>9s}"
-            line += "\n"
-            f.write(line)
+        for src in sources:
+            curves = all_curves.get(src, {})
+            for key, label_tpl, _, _ in CURVE_DEFS:
+                avg = curves.get(key)
+                if avg is None:
+                    continue
+                label = label_tpl.format(src=src.upper())
+                n = len(avg["steps"])
+                line = f"  {label:>24s}"
+                for s in key_steps:
+                    if s < n:
+                        line += (f"  {avg['rmse'][s]:10.4f}"
+                                 f"  {avg['acc'][s]:9.4f}")
+                    else:
+                        line += f"  {'N/A':>10s}  {'N/A':>9s}"
+                line += f"  (n={avg['n_dates']})\n"
+                f.write(line)
 
     print(f"  Summary saved to {summary_path}")
 
@@ -335,142 +239,122 @@ def write_summary_txt(output_dir, old_avg_by_tag, new_align_by_source, display_n
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Plot averaged ACC/RMSE curves, comparing old models and new align results."
-    )
-    # -- Old model comparison --
-    parser.add_argument(
-        "--metrics_root", type=str,
-        default="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/infertest/metrics",
-        help="旧模型结果根目录: {metrics_root}/{tag}/{date}/metrics_{tag}_{date}.txt",
-    )
-    parser.add_argument(
-        "--tags", type=str, nargs="*",
-        default=["3yr_L1+Gradloss_SS"],
-        help="旧模型结果要对比的 tag 列表",
-    )
-    parser.add_argument(
-        "--names", type=str, nargs="*", default=None,
-        help="旧模型的显示名称列表，必须与 --tags 数量一致",
-    )
-    parser.add_argument(
-        "--dates", type=str, nargs="+",
-        default=["20250101", "20250115", "20250131", "20250214", "20250301",
-                 "20250315", "20250331", "20250501", "20250515", "20250601"],
+        description="Plot per-source ACC/RMSE curves with ERA5 reference."
     )
 
-    # -- New A2E align --
+    # -- Naive / A2E data roots --
     parser.add_argument(
         "--align_root", type=str,
-        default="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/inference_results/A2E_0520",
-        help="新 A2E align 结果存放目录: {align_root}/{source}/*_{suffix}.txt",
+        default="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/inference_results/A2E_0603",
+        help="A2E results root: {align_root}/{source}/*_{suffix}.txt",
     )
     parser.add_argument(
-        "--sources", type=str, nargs="+", default=["gfs", "hres"],
+        "--naive_root", type=str,
+        default="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/"
+                "A2E/inference_results",
+        help="Naive results root: {naive_root}/{source}_naive/*_{suffix}.txt "
+             "and {naive_root}/era5_naive/*_{suffix}.txt",
+    )
+    parser.add_argument(
+        "--sources", type=str, nargs="+", default=["gfs", "hres", "cma"],
+        help="Source names (subdirs under align_root).",
     )
     parser.add_argument(
         "--suffix", type=str, default="z500",
+        help="Filename suffix for per-date txt files (default: z500).",
     )
 
     # -- Plot controls --
-    parser.add_argument("--plot_naive_gfs", dest="plot_naive_gfs",
-                        action="store_true", default=True)
-    parser.add_argument("--no_plot_naive_gfs", dest="plot_naive_gfs",
-                        action="store_false")
-    parser.add_argument("--plot_naive_era5", dest="plot_naive_era5",
-                        action="store_true", default=True)
-    parser.add_argument("--no_plot_naive_era5", dest="plot_naive_era5",
-                        action="store_false")
     parser.add_argument("--num_steps", type=int, default=40)
     parser.add_argument("--interval", type=int, default=2)
-    parser.add_argument("--title_suffix", type=str, default="z500")
 
     # -- Output --
     parser.add_argument(
         "--output_dir", type=str,
-        default="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/inference_results/plots",
+        default="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/"
+                "A2E/inference_results/A2E_0603/plots",
     )
+
     args = parser.parse_args()
 
     output_dir = args.output_dir or os.path.join(args.align_root, "plots")
     os.makedirs(output_dir, exist_ok=True)
 
-    # ---- Load old model metrics ----
-    old_avg_by_tag = {}
-    if args.tags:
-        for tag in args.tags:
-            try:
-                old_avg_by_tag[tag] = average_old_metrics(
-                    args.metrics_root, tag, args.dates,
-                )
-            except Exception as e:
-                print(f"载入旧模型 {tag} 失败: {e}")
+    print(f"Sources: {args.sources}")
+    print(f"Align root: {args.align_root}")
+    print(f"Naive root: {args.naive_root}")
+    print()
 
-    if args.names is not None:
-        if len(args.names) != len(args.tags):
-            raise ValueError(
-                f"--names 数量({len(args.names)})必须与 --tags 数量({len(args.tags)})一致"
-            )
-        display_name_by_tag = dict(zip(args.tags, args.names))
+    # ---- Load ERA5 ref once from {naive_root}/era5_naive/ (unified format) ----
+    era5_naive_dir = os.path.join(args.naive_root, "era5_naive")
+    era5_per_date = load_per_date_from_dir(era5_naive_dir, args.suffix)
+    era5_avg = average_across_dates(era5_per_date)
+    if era5_avg:
+        print(f"ERA5 ref loaded: {era5_avg['n_dates']} dates "
+              f"from {era5_naive_dir}")
     else:
-        display_name_by_tag = {tag: tag for tag in (args.tags or [])}
+        print(f"ERA5 ref: 0 dates — will be skipped in figures "
+              f"(checked {era5_naive_dir})")
+    print()
 
-    # ---- Load new A2E align results ----
-    new_align_by_source = {}
-    if args.align_root and os.path.exists(args.align_root):
-        new_align_by_source = average_new_align_by_source(
-            args.align_root, args.sources, suffix=args.suffix,
-        )
-        total_steps = (
-            next(iter(new_align_by_source.values()))["steps"]
-            if new_align_by_source else []
-        )
-        if total_steps:
-            print(f"成功载入新的 A2E align 结果（包含 {len(total_steps)} 个步长的数据）。")
-    else:
-        print(f"警告：未找到 align_root: {args.align_root}")
+    all_curves = {}
 
-    if not old_avg_by_tag and not new_align_by_source:
-        print("无任何绘制数据。")
-        return
+    for src in args.sources:
+        print(f"--- [{src.upper()}] ---")
 
-    # ---- Plot ----
-    plot_curve(
-        old_avg_by_tag, new_align_by_source, output_dir,
-        metric="acc", num_steps=args.num_steps, interval=args.interval,
-        title_suffix=args.title_suffix,
-        plot_naive_gfs=args.plot_naive_gfs,
-        plot_naive_era5=args.plot_naive_era5,
-        display_name_by_tag=display_name_by_tag,
-    )
-    plot_curve(
-        old_avg_by_tag, new_align_by_source, output_dir,
-        metric="rmse", num_steps=args.num_steps, interval=args.interval,
-        title_suffix=args.title_suffix,
-        plot_naive_gfs=args.plot_naive_gfs,
-        plot_naive_era5=args.plot_naive_era5,
-        display_name_by_tag=display_name_by_tag,
-    )
+        curves = {"era5": era5_avg}  # shared ERA5 reference
+
+        # Naive {source} from naive_root/{source}_naive/
+        naive_dir = os.path.join(args.naive_root, f"{src}_naive")
+        naive_per_date = load_per_date_from_dir(naive_dir, args.suffix)
+        curves["naive"] = average_across_dates(naive_per_date)
+        if curves["naive"]:
+            print(f"  Naive {src}: {curves['naive']['n_dates']} dates")
+        else:
+            print(f"  Naive {src}: 0 dates — skipped")
+
+        # A2E {source} from align_root/{source}/
+        a2e_dir = os.path.join(args.align_root, src)
+        a2e_per_date = load_per_date_from_dir(a2e_dir, args.suffix)
+        curves["a2e"] = average_across_dates(a2e_per_date)
+        if curves["a2e"]:
+            print(f"  A2E {src}:   {curves['a2e']['n_dates']} dates")
+        else:
+            print(f"  A2E {src}:   0 dates — skipped")
+
+        # Skip source if nothing at all (besides possibly ERA5 ref)
+        has_own_data = curves["naive"] is not None or curves["a2e"] is not None
+        if not has_own_data:
+            print(f"  [{src}] SKIP: no naive or A2E data for this source.")
+            continue
+
+        all_curves[src] = curves
+
+        # Plot
+        plot_source_figure(src, curves, output_dir, "acc",
+                           num_steps=args.num_steps, interval=args.interval)
+        plot_source_figure(src, curves, output_dir, "rmse",
+                           num_steps=args.num_steps, interval=args.interval)
+
+        # Quick console summary
+        for key, label_tpl, _, _ in CURVE_DEFS:
+            avg = curves.get(key)
+            if avg is not None:
+                try:
+                    label = label_tpl.format(src=src.upper())
+                    print(f"  [{src}] {label:>16s}  "
+                          f"Step1 RMSE={avg['rmse'][0]:.4f}  ACC={avg['acc'][0]:.4f}")
+                except Exception:
+                    pass
 
     # ---- Summary ----
-    write_summary_txt(output_dir, old_avg_by_tag, new_align_by_source, display_name_by_tag)
-
-    # Quick console summary (matching G2E style)
-    if "3yr_L1+Gradloss_SS" in old_avg_by_tag:
-        try:
-            val = old_avg_by_tag["3yr_L1+Gradloss_SS"]["rmse_trans"][0]
-            print(f"3yr_L1+Gradloss_SS 第1步 RMSE (Z500): {val:.4f}")
-        except Exception:
-            pass
-
-    if new_align_by_source:
-        for src, data in new_align_by_source.items():
-            try:
-                val = data["rmse_trans"][0]
-                print(f"A2E ({src}) 第1步 RMSE (Z500): {val:.4f}")
-            except Exception:
-                pass
-
-    print(f"绘图已保存到 {output_dir}/(acc/rmse)_curve.png")
+    if all_curves:
+        write_summary_txt(output_dir, all_curves, args.sources)
+        print(f"\nPlots saved to {output_dir}/")
+        for src in all_curves:
+            print(f"  acc_curve_{src}.png  rmse_curve_{src}.png")
+    else:
+        print("\nNo sources had enough data to plot — check paths and dates.")
 
 
 if __name__ == "__main__":

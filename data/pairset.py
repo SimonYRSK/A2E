@@ -39,6 +39,7 @@ BAD_TIMES = {
 SOURCE_REGISTRY = {
     "gfs": 0,
     "hres": 1,
+    "cma": 2,
 }
 
 class Any2ERA5Dataset(Dataset):
