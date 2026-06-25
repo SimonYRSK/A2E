@@ -1,48 +1,63 @@
 import os
 import random
 import warnings
-
-warnings.filterwarnings("ignore", module="zarr")
-warnings.filterwarnings("ignore", category=UserWarning)
-
-import torch
-import torch.distributed as dist
-from torch.utils.data import DataLoader, ConcatDataset
-from torch.utils.data.distributed import DistributedSampler
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
-from data.pairsetc226 import Any2ERA5Dataset, SOURCE_REGISTRY
-from models.swinUNET_res import A2E
-from trainers.fsdptrain import FSDPUNetTrainer
+import multiprocessing as mp
 
 import numpy as np
 import pandas as pd
-import multiprocessing as mp
+import torch
+import torch.distributed as dist
+from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
+from torch.utils.data import DataLoader, ConcatDataset
+from torch.utils.data.distributed import DistributedSampler
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+from data.pairset import Any2ERA5Dataset, SOURCE_REGISTRY
+from models.swinUNET_res import A2E
+from fuxi.fuxi_grad import UTransformer, FuXi
+from fuxi_rmse_interface import FuXiRMSEInterface, DEFAULT_CHANNEL_WEIGHTS, TARGET_RMSE_CHANNELS
+
+from trainers.fsdptrain_align import FSDPUNetAlignTrainer
 
 
 try:
-    mp.set_start_method('spawn', force=True)
+    from zarr.errors import ZarrUserWarning
+except Exception:
+    ZarrUserWarning = UserWarning
+
+
+try:
+    mp.set_start_method("spawn", force=True)
 except RuntimeError:
     pass
 
 
-torch.backends.cudnn.deterministic = False   # 允许选择最优算法
+torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = True
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+
+
+def configure_warning_filters():
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Both zarr\.json \(Zarr format 3\) and \.zgroup \(Zarr format 2\) metadata objects exist.*",
+        category=ZarrUserWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Object at .* is not recognized as a component of a Zarr hierarchy\.",
+        category=ZarrUserWarning,
+    )
 
 
 def set_random_seed(seed: int):
     random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = False
-    torch.backends.cudnn.benchmark = True
 
 
 def setup_distributed():
-    """初始化单机多卡分布式环境，返回 device, rank, world_size。"""
     if not dist.is_initialized():
         backend = "nccl" if torch.cuda.is_available() and os.name != "nt" else "gloo"
         dist.init_process_group(backend=backend)
@@ -62,52 +77,73 @@ def setup_distributed():
 
 def custom_collate(batch):
     x, y, i, times = zip(*batch)
-    # times 保持为 pandas.Timestamp 数组，模型内部会转字符串再做时间特征
     times = np.array([pd.Timestamp(str(t)) for t in times])
     domains = torch.as_tensor(i, dtype=torch.long)
     return torch.stack(x), torch.stack(y), domains, times
 
 
+def build_fuxi_model(device: torch.device, fuxi_dir: str) -> FuXi:
+    conds = np.load(os.path.join(fuxi_dir, "conds.npy"))
+    std = np.load(os.path.join(fuxi_dir, "std.npy"))
+    mean = np.load(os.path.join(fuxi_dir, "mean.npy"))
+
+    const = torch.from_numpy(conds).to(device=device, dtype=torch.float32)
+    std_t = torch.from_numpy(std).to(device=device, dtype=torch.float32)
+    mean_t = torch.from_numpy(mean).to(device=device, dtype=torch.float32)
+
+    decoder = UTransformer(
+        in_chans=75,
+        out_chans=70,
+        in_frames=2,
+        image_size=(720, 1440),
+        window_size=9,
+        patch_size=4,
+        down_times=1,
+        embed_dim=1536,
+        num_heads=24,
+        depths=[12, 12, 12, 12],
+    )
+
+    model = FuXi(
+        in_frames=2,
+        out_frames=1,
+        step_range=[1],
+        decoder=[decoder, decoder, decoder],
+        const=const,
+        std=std_t,
+        mean=mean_t,
+        device=str(device),
+        dtype=torch.float32,
+    ).to(device=device, dtype=torch.float32)
+
+    model.load(fuxi_dir, fmt="pth")
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad = False
+
+    return model
+
+
 def main():
+    configure_warning_filters()
+
     if "RANK" not in os.environ:
-        raise RuntimeError("mainfsdp.py 需要通过 torchrun 启动，例如: torchrun --nproc_per_node=4 /home/ximutian/A2E/mainc226_res.py")
+        raise RuntimeError("main_align.py 需要通过 torchrun 启动，例如: torchrun --nproc_per_node=4 A2E/main_res0603.py")
 
     device, rank, world_size = setup_distributed()
-    is_master = (rank == 0)
+    is_master = rank == 0
 
     if is_master:
-        print(f"World size = {world_size}, rank = {rank}, device = {device}")
+        print(f"World size={world_size}, rank={rank}, device={device}")
 
     set_random_seed(42)
 
-    data_sample_seed = 43
-
-    # 重建损失配置：
-    # - "l2"    : 仅 MSE（默认）
-    # - "l1"    : 仅 L1
-    # - "charbonnier" : Charbonnier（平滑 L1）
-    # gradloss 为可选项，最终 loss = recon + grad_loss_weight * gradloss (+ 可选 KL)
-    recon_loss_type = "l1"
-    charbonnier_eps = 1e-3
-    use_grad_loss = True
-    grad_loss_weight = 0.4
-
-    # 正则与 dropout（可根据验证集调整）
-    dropout_rate = 0.1
-    l1_reg_weight = 0.0
-    l2_reg_weight = 0.0
-
-    # VAE 结构实验：仅保留编码器-解码器主干，关闭残差块与 U-Net 跳连
-    use_skip_connections = True
-    use_residual_blocks = True
-
-    # 1) 训练集：使用 2022-2024，全量样本，来自 2020-2024 标准化 GFS Zarr
-    gfs_path = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/gfs_2020_2025_c226_0p25_norm.zarr"
-    y_path = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/fanjiang/dataset/era5.2010_2025.c226.zarr"
+    x_path = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/gfs_2020_2025_c226_0p25_norm.zarr"
+    y_path = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/era5.2020_2025_norm.zarr"
     hres_path = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/hres_2024_2025_c226_0p25_norm.zarr"
     cma_path = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/cma_gfs_2020_2026.c226.norm.zarr"
 
-    source_configs = [("gfs", gfs_path, SOURCE_REGISTRY.get("gfs", 0))]
+    source_configs = [("gfs", x_path, SOURCE_REGISTRY.get("gfs", 0))]
     if hres_path:
         source_configs.append(("hres", hres_path, SOURCE_REGISTRY.get("hres", 1)))
     if cma_path:
@@ -141,10 +177,8 @@ def main():
                 y_path=y_path,
                 source_name=source_name,
                 source_idx=source_idx,
-                # max_samples_per_year 可在调参时设成一个较小的数，例如 500 或 1000，快速训练
-                # 正式训练时设为 None 即可使用全量数据
                 max_samples_per_year=None,
-                sample_seed=data_sample_seed,
+                sample_seed=43,
             )
         )
 
@@ -158,16 +192,9 @@ def main():
                 source_idx=source_idx,
                 val_sample_per_month=4,
                 val_sample_year=2025,
-                sample_seed=data_sample_seed,
+                sample_seed=43,
             )
         )
-
-    if is_master:
-        for (source_name, _, source_idx), vset in zip(source_configs, val_sets):
-            vlen = len(vset)
-            print(f"[Val] source={source_name} (id={source_idx}) samples={vlen}")
-            if vlen == 0:
-                raise ValueError(f"验证集为空：source={source_name} (id={source_idx})，请检查时间范围或数据路径")
 
     train_set = ConcatDataset(train_sets)
     val_set = ConcatDataset(val_sets)
@@ -175,9 +202,13 @@ def main():
     train_sampler = DistributedSampler(train_set, num_replicas=world_size, rank=rank, shuffle=True)
     val_sampler = DistributedSampler(val_set, num_replicas=world_size, rank=rank, shuffle=False)
 
+    batch_size = 8
+    base_lr = 2e-4
+
+
     train_loader = DataLoader(
         train_set,
-        batch_size=4,
+        batch_size=batch_size,
         shuffle=False,
         sampler=train_sampler,
         num_workers=4,
@@ -189,7 +220,7 @@ def main():
 
     val_loader = DataLoader(
         val_set,
-        batch_size=4,
+        batch_size=batch_size,
         shuffle=False,
         sampler=val_sampler,
         num_workers=4,
@@ -198,17 +229,18 @@ def main():
         collate_fn=custom_collate,
         prefetch_factor=1,
     )
-    # DANN: 域对抗训练开关
+
+    # DANN: 域对抗训练开关。开启后在 encoder bottleneck 上施加域分类损失，
+    # 迫使不同源域的中间表示不可分辨。
     using_dann = False
-    domain_loss_weight = 0.1
+    domain_loss_weight = 1e-3
     dann_gamma = 10.0
 
-    # 先在未包裹 FSDP 的模型上统计参数量（只在 rank0）
     base_model = A2E(
         img_size=(721, 1440),
         patch_size=(4, 4),
-        in_chans=165,
-        out_chans=165,
+        in_chans=70,
+        out_chans=70,
         embed_dim=384,
         num_groups=32,
         num_heads=8,
@@ -222,56 +254,49 @@ def main():
         res_per_stage=[1, 1, 1],
         channels=[384, 768, 1536],
         using_kl=False,
-        dropout_rate=dropout_rate,
-        use_skip_connections=use_skip_connections,
-        use_residual_blocks=use_residual_blocks,
+        dropout_rate=0.1,
+        use_skip_connections=True,
+        use_residual_blocks=True,
         using_dann=using_dann,
     )
 
     if is_master:
-        print(f"模型参数量: {sum(p.numel() for p in base_model.parameters()) / 1e6:.2f} M")
+        print(f"A2E 参数量: {sum(p.numel() for p in base_model.parameters()) / 1e6:.2f} M")
 
     base_model.to(device)
+    model = FSDP(base_model, device_id=device)
 
-    # 用 FSDP 包裹模型（仅 CUDA 可用时；CPU 下 FSDP 不支持）
-    if torch.cuda.is_available():
-        model = FSDP(base_model, device_id=device)
-    else:
-        model = base_model
+    fuxi_dir = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/fuxi_inference/main/fuxi"
+    fuxi_model = build_fuxi_model(device, fuxi_dir=fuxi_dir)
 
-    num_epochs = 150
+    channel_names = train_sets[0].target_channels if train_sets else None
+
+    fuxi_rmse_interface = FuXiRMSEInterface(
+        fuxi_model=fuxi_model,
+        era5_zarr_path=y_path,
+        channel_names=channel_names,
+        device=device,
+        target_channels=TARGET_RMSE_CHANNELS,
+        channel_weights=DEFAULT_CHANNEL_WEIGHTS,
+        lead_hours=6,
+    )
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=2e-4,
+        lr=base_lr,
         weight_decay=2e-5,
         betas=(0.9, 0.999),
     )
 
+    num_epochs = 150
+    warmup_epochs = 5
     min_lr = 1e-7
 
-    # 使用 warmup + 余弦退火学习率调度器（按 epoch 进行 step）
-    warmup_epochs = 5
-    # 线性 warmup：从 0.1×lr 线性增加到 1.0×lr
-    warmup_scheduler = LinearLR(
-        optimizer,
-        start_factor=0.1,
-        end_factor=1.0,
-        total_iters=warmup_epochs,
-    )
-    # 余弦退火：从当前 lr 逐步衰减到 min_lr
-    cosine_scheduler = CosineAnnealingLR(
-        optimizer,
-        T_max=max(num_epochs - warmup_epochs, 1),
-        eta_min=min_lr,
-    )
-    scheduler = SequentialLR(
-        optimizer,
-        schedulers=[warmup_scheduler, cosine_scheduler],
-        milestones=[warmup_epochs],
-    )
+    warmup_scheduler = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs)
+    cosine_scheduler = CosineAnnealingLR(optimizer, T_max=max(num_epochs - warmup_epochs, 1), eta_min=min_lr)
+    scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[warmup_epochs])
 
-    trainer = FSDPUNetTrainer(
+    trainer = FSDPUNetAlignTrainer(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
@@ -279,34 +304,40 @@ def main():
         scheduler=scheduler,
         epochs=num_epochs,
         device=device,
-        beta=1e-4,  
-        tb_dir="/home/ximutian/tensorboard_logs/A2Ec226_0624",
-        save_dir="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/checkpoints/mainc226_0624",
+        beta=1e-4,
+        tb_dir="/home/ximutian/tensorboard_logs/A2E_0628_reproduce",
+        save_dir="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/checkpoints/A2E_0628_reproduce",
         save_interval=1,
         use_amp=False,
         rank=rank,
         world_size=world_size,
-        kl_anneal=False,           # 启用 KL annealing
-        kl_anneal_epochs=7,      # 前 10 个 epoch 从 0 线性涨到 beta
-        plot_root="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/channelpics/mainc226_0624",
-        recon_loss_type=recon_loss_type,
-        charbonnier_eps=charbonnier_eps,
-        use_grad_loss=use_grad_loss,
-        grad_loss_weight=grad_loss_weight,
-        l1_reg_weight=l1_reg_weight,
-        l2_reg_weight=l2_reg_weight,
+        kl_anneal=False,
+        kl_anneal_epochs=7,
+        plot_root="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/channelpics/A2E_0628_reproduce",
+        recon_loss_type="l1",
+        charbonnier_eps=1e-3,
+        use_grad_loss=True,
+        grad_loss_weight=0.4,
+        l1_reg_weight=0.0,
+        l2_reg_weight=0.0,
+        fuxi_model=fuxi_model,
+        fuxi_rmse_interface=fuxi_rmse_interface,
+        channel_rmse_weight=1e-3,
+        rmse_every_n_steps=1,
+        rmse_samples_per_batch=1,
         using_dann=using_dann,
         domain_loss_weight=domain_loss_weight,
         dann_gamma=dann_gamma,
     )
 
-    trainer.train(
-        resume_path=None,
-        only_model=False,
-    )
-
-    dist.destroy_process_group()
+    try:
+        trainer.train(resume_path=None, only_model=False)
+    finally:
+        fuxi_rmse_interface.close()
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
+
     main()
+#export LD_LIBRARY_PATH=/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/conda_env/xmt/lib:$LD_LIBRARY_PATH

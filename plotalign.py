@@ -245,7 +245,7 @@ def main():
     # -- Naive / A2E data roots --
     parser.add_argument(
         "--align_root", type=str,
-        default="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/inference_results/A2E_0603",
+        default="/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/inference_results/A2E_0616",
         help="A2E results root: {align_root}/{source}/*_{suffix}.txt",
     )
     parser.add_argument(
