@@ -6,7 +6,12 @@ set -euo pipefail
 # This script organizes the experiments from:
 #   A2E Experiment CheckList.docx
 # plus FuXi-loss-mode ablations:
-#   manual_weighted / raw_mean / reference_norm
+#   raw_mean / reference_norm
+#
+# De-duplication policy:
+#   A2Ec70_gfs_refnorm is the canonical single-source full/reference_norm model.
+#   A2Ec70_gfs_cma_hres_refnorm is the canonical multi-source full model.
+#   Later phases reuse these results instead of retraining equivalent configs.
 #
 # Default is DRY RUN: commands are printed but not executed.
 # Execute for real with:
@@ -54,16 +59,16 @@ run_eval() {
 # -----------------------------------------------------------------------------
 phase_smoke() {
   # One-epoch quick check for config saving, training loop, checkpoint, and metrics CSV.
-  run_train "smoke_cma_refnorm" \
-    "SOURCES=cma" \
+  run_train "smoke_gfs_refnorm" \
+    "SOURCES=gfs" \
     "EPOCHS=1" \
     "VAL_SAMPLE_PER_MONTH=1" \
     "RMSE_EVERY_N_STEPS=10" \
     "FUXI_LOSS_MODE=reference_norm" \
     "CHANNEL_RMSE_WEIGHT=4e-3"
 
-  run_eval "smoke_cma_refnorm" \
-    "EVAL_SOURCES=cma" \
+  run_eval "smoke_gfs_refnorm" \
+    "EVAL_SOURCES=gfs" \
     "EVAL_DATES=20250101" \
     "EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700"
 }
@@ -155,19 +160,13 @@ phase_dual_source() {
 # Use CMA first because it matches current successful experiment behavior.
 # -----------------------------------------------------------------------------
 phase_loss_ablation() {
-  # Full: L1 + Grad + FuXi reference normalization.
-  # This may duplicate A2Ec70_cma_refnorm from phase_main; keep a clear ablation name.
-  run_train "A2Ec70_ab_full_refnorm" \
-    "SOURCES=cma" \
-    "EPOCHS=90" \
-    "USE_GRAD_LOSS=true" \
-    "GRAD_LOSS_WEIGHT=0.4" \
-    "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+  # Full baseline is reused from phase_main:
+  #   A2Ec70_gfs_refnorm = L1 + Grad + FuXi reference_norm, w=4e-3.
+  # Do not retrain it here.
 
   # w/o FuXi: L1 + Grad only.
   run_train "A2Ec70_ab_wo_fuxi" \
-    "SOURCES=cma" \
+    "SOURCES=gfs" \
     "EPOCHS=90" \
     "USE_GRAD_LOSS=true" \
     "GRAD_LOSS_WEIGHT=0.4" \
@@ -176,7 +175,7 @@ phase_loss_ablation() {
 
   # w/o Grad: L1 + FuXi only.
   run_train "A2Ec70_ab_wo_grad" \
-    "SOURCES=cma" \
+    "SOURCES=gfs" \
     "EPOCHS=90" \
     "USE_GRAD_LOSS=false" \
     "GRAD_LOSS_WEIGHT=0" \
@@ -185,7 +184,7 @@ phase_loss_ablation() {
 
   # L1 only: no Grad, no FuXi.
   run_train "A2Ec70_ab_l1_only" \
-    "SOURCES=cma" \
+    "SOURCES=gfs" \
     "EPOCHS=90" \
     "USE_GRAD_LOSS=false" \
     "GRAD_LOSS_WEIGHT=0" \
@@ -193,13 +192,13 @@ phase_loss_ablation() {
     "CHANNEL_RMSE_WEIGHT=0"
 
   for exp in \
-    A2Ec70_ab_full_refnorm \
+    A2Ec70_gfs_refnorm \
     A2Ec70_ab_wo_fuxi \
     A2Ec70_ab_wo_grad \
     A2Ec70_ab_l1_only
   do
     run_eval "${exp}" \
-      "EVAL_SOURCES=cma" \
+      "EVAL_SOURCES=gfs" \
       "EVAL_DATES=${EVAL_DATES}" \
       "EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700"
   done
@@ -207,44 +206,29 @@ phase_loss_ablation() {
 
 # -----------------------------------------------------------------------------
 # Phase 3: FuXi loss mode ablation
-# Purpose: compare manual_weighted / raw_mean / reference_norm fairly.
+# Purpose: compare raw_mean / reference_norm fairly.
 # Weight choices make effective FuXi-loss contribution close to current behavior.
 # -----------------------------------------------------------------------------
 phase_fuxi_loss() {
-  # Old heuristic: manual weighted raw RMSE, current historical setting.
-  run_train "A2Ec70_fuxi_manual_w1e3" \
-    "SOURCES=cma" \
-    "EPOCHS=90" \
-    "USE_GRAD_LOSS=true" \
-    "GRAD_LOSS_WEIGHT=0.4" \
-    "FUXI_LOSS_MODE=manual_weighted" \
-    "CHANNEL_RMSE_WEIGHT=1e-3"
-
   # Raw RMSE mean: directly average raw channel-wise FuXi downstream RMSE.
   run_train "A2Ec70_fuxi_rawmean_w5e4" \
-    "SOURCES=cma" \
+    "SOURCES=gfs" \
     "EPOCHS=90" \
     "USE_GRAD_LOSS=true" \
     "GRAD_LOSS_WEIGHT=0.4" \
     "FUXI_LOSS_MODE=raw_mean" \
     "CHANNEL_RMSE_WEIGHT=5e-4"
 
-  # Recommended method: FuXi-ERA5 reference normalization.
-  run_train "A2Ec70_fuxi_refnorm_w4e3" \
-    "SOURCES=cma" \
-    "EPOCHS=90" \
-    "USE_GRAD_LOSS=true" \
-    "GRAD_LOSS_WEIGHT=0.4" \
-    "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+  # Recommended reference_norm baseline is reused from phase_main:
+  #   A2Ec70_gfs_refnorm = reference_norm, w=4e-3.
+  # Do not retrain it here.
 
   for exp in \
-    A2Ec70_fuxi_manual_w1e3 \
     A2Ec70_fuxi_rawmean_w5e4 \
-    A2Ec70_fuxi_refnorm_w4e3
+    A2Ec70_gfs_refnorm
   do
     run_eval "${exp}" \
-      "EVAL_SOURCES=cma" \
+      "EVAL_SOURCES=gfs" \
       "EVAL_DATES=${EVAL_DATES}" \
       "EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700"
   done
@@ -256,13 +240,9 @@ phase_fuxi_loss() {
 # in multi-source training, so this phase uses GFS+CMA+HRES.
 # -----------------------------------------------------------------------------
 phase_embedding_ablation() {
-  run_train "A2Ec70_ms_full_embed" \
-    "SOURCES=gfs,cma,hres" \
-    "EPOCHS=90" \
-    "USING_TIME_EMBEDDING=true" \
-    "USING_SOURCE_EMBEDDING=true" \
-    "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+  # Full multi-source embedding baseline is reused from phase_main:
+  #   A2Ec70_gfs_cma_hres_refnorm = time emb + source emb.
+  # Do not retrain it here.
 
   run_train "A2Ec70_ms_wo_time_emb" \
     "SOURCES=gfs,cma,hres" \
@@ -281,7 +261,7 @@ phase_embedding_ablation() {
     "CHANNEL_RMSE_WEIGHT=4e-3"
 
   for exp in \
-    A2Ec70_ms_full_embed \
+    A2Ec70_gfs_cma_hres_refnorm \
     A2Ec70_ms_wo_time_emb \
     A2Ec70_ms_wo_source_emb
   do
@@ -299,7 +279,7 @@ phase_embedding_ablation() {
 # -----------------------------------------------------------------------------
 phase_model_scaling() {
   run_train "A2Ec70_small_refnorm" \
-    "SOURCES=cma" \
+    "SOURCES=gfs" \
     "EPOCHS=90" \
     "EMBED_DIM=192" \
     "CHANNELS=192,384,768" \
@@ -308,7 +288,7 @@ phase_model_scaling() {
     "CHANNEL_RMSE_WEIGHT=4e-3"
 
   run_train "A2Ec70_base_refnorm" \
-    "SOURCES=cma" \
+    "SOURCES=gfs" \
     "EPOCHS=90" \
     "EMBED_DIM=256" \
     "CHANNELS=256,512,1024" \
@@ -316,22 +296,17 @@ phase_model_scaling() {
     "FUXI_LOSS_MODE=reference_norm" \
     "CHANNEL_RMSE_WEIGHT=4e-3"
 
-  run_train "A2Ec70_full_refnorm" \
-    "SOURCES=cma" \
-    "EPOCHS=90" \
-    "EMBED_DIM=384" \
-    "CHANNELS=384,768,1536" \
-    "DEPTH=0,0,1" \
-    "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+  # Full scaling baseline is reused from phase_main:
+  #   A2Ec70_gfs_refnorm = embed_dim=384, channels=384,768,1536.
+  # Do not retrain it here.
 
   for exp in \
     A2Ec70_small_refnorm \
     A2Ec70_base_refnorm \
-    A2Ec70_full_refnorm
+    A2Ec70_gfs_refnorm
   do
     run_eval "${exp}" \
-      "EVAL_SOURCES=cma" \
+      "EVAL_SOURCES=gfs" \
       "EVAL_DATES=${EVAL_DATES}" \
       "EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700"
   done
@@ -342,12 +317,14 @@ phase_model_scaling() {
 # Purpose: supplementary robustness checks. Run after main and ablations.
 # -----------------------------------------------------------------------------
 phase_parameter_study() {
-  # Gradient-loss weight sensitivity. 0.0 is already covered by w/o grad,
-  # so we test 0.1/0.2/0.4/0.8.
-  for w in 0.1 0.2 0.4 0.8; do
+  # Gradient-loss weight sensitivity.
+  # w=0.0 is covered by A2Ec70_ab_wo_grad;
+  # w=0.4 is reused from A2Ec70_gfs_refnorm.
+  # Do not retrain duplicate default points here.
+  for w in 0.1 0.2 0.8; do
     tag=${w/./p}
     run_train "A2Ec70_gradw_${tag}" \
-      "SOURCES=cma" \
+      "SOURCES=gfs" \
       "EPOCHS=90" \
       "USE_GRAD_LOSS=true" \
       "GRAD_LOSS_WEIGHT=${w}" \
@@ -356,10 +333,12 @@ phase_parameter_study() {
   done
 
   # Reference-normalized FuXi loss weight sensitivity.
-  for w in 1e-3 2e-3 4e-3 8e-3; do
+  # w=4e-3 is reused from A2Ec70_gfs_refnorm.
+  # Do not retrain duplicate default point here.
+  for w in 1e-3 2e-3 8e-3; do
     tag=${w/-/m}
     run_train "A2Ec70_refnorm_w${tag}" \
-      "SOURCES=cma" \
+      "SOURCES=gfs" \
       "EPOCHS=90" \
       "USE_GRAD_LOSS=true" \
       "GRAD_LOSS_WEIGHT=0.4" \

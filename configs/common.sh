@@ -13,7 +13,7 @@ export PYTHON_BIN=${PYTHON_BIN:-python}
 # Paths
 # -------------------------
 export A2E_ROOT=${A2E_ROOT:-E:/myrepo/A2E}
-export PROJECT_ROOT=${PROJECT_ROOT:-/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E}
+export PROJECT_ROOT=${PROJECT_ROOT:-/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/Formal}
 export DATA_ROOT=${DATA_ROOT:-/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data}
 
 export ERA5_PATH=${ERA5_PATH:-${DATA_ROOT}/era5.2020_2025_norm.zarr}
@@ -32,7 +32,7 @@ export INFERENCE_ROOT=${INFERENCE_ROOT:-${PROJECT_ROOT}/inference_results}
 # -------------------------
 # Data split
 # -------------------------
-export SOURCES=${SOURCES:-cma}
+export SOURCES=${SOURCES:-gfs}
 export TRAIN_START=${TRAIN_START:-2022-01-01 00:00:00}
 export TRAIN_END=${TRAIN_END:-2024-12-31 18:00:00}
 export VAL_START=${VAL_START:-2025-01-01 00:00:00}

@@ -19,7 +19,7 @@ A2E/
 ├── trainers/
 │   └── fsdptrain_align_metrics.py        # trainer 副本，额外保存 CSV/JSON 指标
 ├── main_res_exp.py                       # 参数化训练入口，不改原 main_res.py
-└── fuxi_rmse_interface_new.py            # 支持 manual_weighted/raw_mean/reference_norm
+└── fuxi_rmse_interface_new.py            # 支持 manual_weighted/raw_mean/reference_norm；推荐实验脚本只使用 raw_mean/reference_norm
 ```
 
 原始文件仍然保留：
@@ -47,7 +47,7 @@ scripts/run_recommended_experiments.sh
 ```text
 A2Ec70_cma_refnorm
 A2Ec70_ab_wo_fuxi
-A2Ec70_fuxi_refnorm_w4e3
+A2Ec70_fuxi_rawmean_w5e4
 A2Ec70_small_refnorm
 ```
 
@@ -500,7 +500,301 @@ RUN=1 bash A2E/scripts/run_recommended_experiments.sh all
 
 ---
 
-## 9. 推荐实际执行顺序
+## 9. 重点：推荐实验阶段细分
+
+`run_recommended_experiments.sh` 当前把实验拆成 9 个 phase：
+
+```text
+raw_note
+smoke
+main
+dual_source
+loss_ablation
+fuxi_loss
+embedding
+scaling
+parameter
+all
+```
+
+其中你前面列出的 `all` 默认顺序是：
+
+```text
+1. raw_note
+2. smoke
+3. main
+4. loss_ablation
+5. fuxi_loss
+6. embedding
+7. scaling
+8. parameter
+```
+
+注意：`dual_source` 是可选阶段，**不在 `all` 里默认执行**，需要单独运行。
+
+---
+
+### 9.1 `raw_note`：Raw baseline 提醒
+
+运行命令：
+
+```bash
+bash A2E/scripts/run_recommended_experiments.sh raw_note
+```
+
+这个阶段不训练模型，只打印提醒：
+
+```text
+Raw GFS / CMA / HRES baseline 在 checklist 中标记为已完成。
+当前脚本主要负责 A2E 模型训练与 A2E checkpoint 评测。
+Raw source-vs-ERA5 baseline 后续如需统一入表，建议单独写 raw-eval 脚本。
+```
+
+Raw baseline 最终也应统一保存这些变量：
+
+```text
+z500, t2m, tp, ws10m, msl, r700
+```
+
+---
+
+### 9.2 `smoke`：流程测试
+
+运行命令：
+
+```bash
+RUN=1 bash A2E/scripts/run_recommended_experiments.sh smoke
+```
+
+包含实验：
+
+| EXP_NAME | Sources | Epochs | FuXi loss mode | Channel RMSE weight | 目的 |
+|---|---|---:|---|---:|---|
+| `smoke_cma_refnorm` | `cma` | 1 | `reference_norm` | `4e-3` | 检查训练、checkpoint、config、CSV、eval 是否能跑通 |
+
+额外覆盖：
+
+```text
+VAL_SAMPLE_PER_MONTH=1
+RMSE_EVERY_N_STEPS=10
+```
+
+评测：
+
+```text
+EVAL_SOURCES=cma
+EVAL_DATES=20250101
+EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
+```
+
+---
+
+### 9.3 `main`：主实验
+
+运行命令：
+
+```bash
+RUN=1 bash A2E/scripts/run_recommended_experiments.sh main
+```
+
+包含实验：
+
+| EXP_NAME | 训练 sources | Epochs | FuXi loss mode | Channel RMSE weight | 作用 |
+|---|---|---:|---|---:|---|
+| `A2Ec70_gfs_refnorm` | `gfs` | 90 | `reference_norm` | `4e-3` | GFS-only 单源模型 |
+| `A2Ec70_cma_refnorm` | `cma` | 90 | `reference_norm` | `4e-3` | CMA-only 单源模型 |
+| `A2Ec70_hres_refnorm` | `hres` | 90 | `reference_norm` | `4e-3` | HRES-only 单源模型 |
+| `A2Ec70_gfs_cma_hres_refnorm` | `gfs,cma,hres` | 90 | `reference_norm` | `4e-3` | 三源联合主模型 |
+
+统一评测：
+
+```text
+EVAL_SOURCES=gfs,cma,hres
+EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
+```
+
+这个阶段是论文主结果的核心，用来回答：
+
+```text
+1. A2E 相比 Raw source 是否有效？
+2. 单源模型分别表现如何？
+3. 多源联合训练是否带来平均收益？
+```
+
+---
+
+### 9.4 `dual_source`：双源组合实验，可选
+
+运行命令：
+
+```bash
+RUN=1 bash A2E/scripts/run_recommended_experiments.sh dual_source
+```
+
+包含实验：
+
+| EXP_NAME | 训练 sources | Epochs | FuXi loss mode | Channel RMSE weight | 作用 |
+|---|---|---:|---|---:|---|
+| `A2Ec70_gfs_cma_refnorm` | `gfs,cma` | 90 | `reference_norm` | `4e-3` | GFS+CMA 双源 |
+| `A2Ec70_gfs_hres_refnorm` | `gfs,hres` | 90 | `reference_norm` | `4e-3` | GFS+HRES 双源 |
+| `A2Ec70_cma_hres_refnorm` | `cma,hres` | 90 | `reference_norm` | `4e-3` | CMA+HRES 双源 |
+
+统一评测：
+
+```text
+EVAL_SOURCES=gfs,cma,hres
+EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
+```
+
+这个阶段用于补充说明不同 source 组合的贡献。由于训练成本较高，不默认包含在 `all` 中。
+
+---
+
+### 9.5 `loss_ablation`：核心 loss 消融
+
+运行命令：
+
+```bash
+RUN=1 bash A2E/scripts/run_recommended_experiments.sh loss_ablation
+```
+
+包含实验：
+
+| EXP_NAME | Sources | L1 | Grad Loss | FuXi Loss | FuXi loss mode | Channel RMSE weight | 作用 |
+|---|---|---|---|---|---|---:|---|
+| `A2Ec70_cma_refnorm` | `cma` | ✓ | ✓ | ✓ | `reference_norm` | `4e-3` | 完整模型；复用 main 阶段 canonical CMA full |
+| `A2Ec70_ab_wo_fuxi` | `cma` | ✓ | ✓ | ✗ | `reference_norm` | `0` | 去除 FuXi downstream loss |
+| `A2Ec70_ab_wo_grad` | `cma` | ✓ | ✗ | ✓ | `reference_norm` | `4e-3` | 去除 gradient loss |
+| `A2Ec70_ab_l1_only` | `cma` | ✓ | ✗ | ✗ | `reference_norm` | `0` | 仅 L1 baseline |
+
+统一评测：
+
+```text
+EVAL_SOURCES=cma
+EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
+```
+
+这个阶段用来证明：
+
+```text
+Grad Loss 和 FuXi downstream Loss 各自是否有效。
+```
+
+---
+
+### 9.6 `fuxi_loss`：FuXi loss mode 消融
+
+运行命令：
+
+```bash
+RUN=1 bash A2E/scripts/run_recommended_experiments.sh fuxi_loss
+```
+
+包含实验：
+
+| EXP_NAME | Sources | FuXi loss mode | Channel RMSE weight | 公式含义 | 作用 |
+|---|---|---|---:|---|---|
+| `A2Ec70_fuxi_rawmean_w5e4` | `cma` | `raw_mean` | `5e-4` | 直接平均 raw RMSE | 不做尺度归一化对照 |
+| `A2Ec70_cma_refnorm` | `cma` | `reference_norm` | `4e-3` | RMSE / FuXi-ERA5 reference RMSE 后平均 | 推荐主方法；复用 main 阶段 canonical CMA full |
+
+统一评测：
+
+```text
+EVAL_SOURCES=cma
+EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
+```
+
+这个阶段是 FuXi loss 设计严谨性的核心证据。`manual_weighted` 是历史方案，当前推荐实验不再单独训练，避免增加不必要对照。
+
+---
+
+### 9.7 `embedding`：Time / Source embedding 消融
+
+运行命令：
+
+```bash
+RUN=1 bash A2E/scripts/run_recommended_experiments.sh embedding
+```
+
+包含实验：
+
+| EXP_NAME | Sources | Time Emb | Source Emb | FuXi loss mode | Channel RMSE weight | 作用 |
+|---|---|---|---|---|---:|---|
+| `A2Ec70_gfs_cma_hres_refnorm` | `gfs,cma,hres` | ✓ | ✓ | `reference_norm` | `4e-3` | 多源完整模型；复用 main 阶段 canonical multi-source full |
+| `A2Ec70_ms_wo_time_emb` | `gfs,cma,hres` | ✗ | ✓ | `reference_norm` | `4e-3` | 去除时间嵌入 |
+| `A2Ec70_ms_wo_source_emb` | `gfs,cma,hres` | ✓ | ✗ | `reference_norm` | `4e-3` | 去除源域嵌入 |
+
+统一评测：
+
+```text
+EVAL_SOURCES=gfs,cma,hres
+EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
+```
+
+注意：source embedding 在单源 CMA 下基本退化为常数 bias，因此这里放在多源训练上更合理。
+
+---
+
+### 9.8 `scaling`：模型参数量 / 容量实验
+
+运行命令：
+
+```bash
+RUN=1 bash A2E/scripts/run_recommended_experiments.sh scaling
+```
+
+包含实验：
+
+| EXP_NAME | Sources | Embed Dim | Channels | Depth | FuXi loss mode | Channel RMSE weight | 作用 |
+|---|---|---:|---|---|---|---:|---|
+| `A2Ec70_small_refnorm` | `cma` | 192 | `192,384,768` | `0,0,1` | `reference_norm` | `4e-3` | 小模型 |
+| `A2Ec70_base_refnorm` | `cma` | 256 | `256,512,1024` | `0,0,1` | `reference_norm` | `4e-3` | 中模型 |
+| `A2Ec70_cma_refnorm` | `cma` | 384 | `384,768,1536` | `0,0,1` | `reference_norm` | `4e-3` | 完整模型；复用 main 阶段 canonical CMA full |
+
+统一评测：
+
+```text
+EVAL_SOURCES=cma
+EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
+```
+
+这个阶段替代 CNN U-Net / ResUNet / SwinUNet 的大横向结构比较，更符合“同一模型不同参数量”的设计。
+
+---
+
+### 9.9 `parameter`：超参数敏感性实验
+
+运行命令：
+
+```bash
+RUN=1 bash A2E/scripts/run_recommended_experiments.sh parameter
+```
+
+包含两组。
+
+#### 9.9.1 Gradient loss weight
+
+| EXP_NAME | Sources | Grad Loss Weight | FuXi loss mode | Channel RMSE weight |
+|---|---|---:|---|---:|
+| `A2Ec70_gradw_0p1` | `cma` | 0.1 | `reference_norm` | `4e-3` |
+| `A2Ec70_gradw_0p2` | `cma` | 0.2 | `reference_norm` | `4e-3` |
+| `A2Ec70_cma_refnorm` | `cma` | 0.4 | `reference_norm` | `4e-3` |
+| `A2Ec70_gradw_0p8` | `cma` | 0.8 | `reference_norm` | `4e-3` |
+
+#### 9.9.2 FuXi reference_norm loss weight
+
+| EXP_NAME | Sources | FuXi loss mode | Channel RMSE weight |
+|---|---|---|---:|
+| `A2Ec70_refnorm_w1em3` | `cma` | `reference_norm` | `1e-3` |
+| `A2Ec70_refnorm_w2em3` | `cma` | `reference_norm` | `2e-3` |
+| `A2Ec70_cma_refnorm` | `cma` | `reference_norm` | `4e-3` |
+| `A2Ec70_refnorm_w8em3` | `cma` | `reference_norm` | `8e-3` |
+
+这个阶段用于 supplementary 或 robustness，不建议最先跑。
+
+---
+
+## 10. 推荐实际执行顺序
 
 ### Step 0：smoke test
 
@@ -547,7 +841,7 @@ RUN=1 bash A2E/scripts/run_recommended_experiments.sh loss_ablation
 包括：
 
 ```text
-A2Ec70_ab_full_refnorm
+A2Ec70_cma_refnorm      # Full baseline，复用 main 阶段
 A2Ec70_ab_wo_fuxi
 A2Ec70_ab_wo_grad
 A2Ec70_ab_l1_only
@@ -564,15 +858,13 @@ RUN=1 bash A2E/scripts/run_recommended_experiments.sh fuxi_loss
 包括：
 
 ```text
-A2Ec70_fuxi_manual_w1e3
 A2Ec70_fuxi_rawmean_w5e4
-A2Ec70_fuxi_refnorm_w4e3
+A2Ec70_cma_refnorm      # reference_norm 主方法，复用 main 阶段
 ```
 
-三种模式对应：
+两种模式对应：
 
 ```text
-manual_weighted
 raw_mean
 reference_norm
 ```
@@ -588,7 +880,7 @@ RUN=1 bash A2E/scripts/run_recommended_experiments.sh embedding
 包括：
 
 ```text
-A2Ec70_ms_full_embed
+A2Ec70_gfs_cma_hres_refnorm  # Full embedding baseline，复用 main 阶段
 A2Ec70_ms_wo_time_emb
 A2Ec70_ms_wo_source_emb
 ```
@@ -608,7 +900,7 @@ RUN=1 bash A2E/scripts/run_recommended_experiments.sh scaling
 ```text
 A2Ec70_small_refnorm
 A2Ec70_base_refnorm
-A2Ec70_full_refnorm
+A2Ec70_cma_refnorm      # Full baseline，复用 main 阶段
 ```
 
 ---
@@ -622,8 +914,8 @@ RUN=1 bash A2E/scripts/run_recommended_experiments.sh parameter
 包括：
 
 ```text
-grad_loss_weight = 0.1, 0.2, 0.4, 0.8
-channel_rmse_weight = 1e-3, 2e-3, 4e-3, 8e-3
+grad_loss_weight = 0.1, 0.2, 0.4, 0.8      # 0.4 复用 A2Ec70_cma_refnorm
+channel_rmse_weight = 1e-3, 2e-3, 4e-3, 8e-3 # 4e-3 复用 A2Ec70_cma_refnorm
 ```
 
 ---
