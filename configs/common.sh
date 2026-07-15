@@ -25,7 +25,7 @@ export CLIM_PATH=${CLIM_PATH:-/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/
 
 export OUTPUT_ROOT=${OUTPUT_ROOT:-${PROJECT_ROOT}/experiments}
 export CHECKPOINT_ROOT=${CHECKPOINT_ROOT:-${PROJECT_ROOT}/checkpoints}
-export TENSORBOARD_ROOT=${TENSORBOARD_ROOT:-/home/ximutian/tensorboard_logs}
+export TENSORBOARD_ROOT=${TENSORBOARD_ROOT:-${PROJECT_ROOT}/tensorboard_logs}
 export PLOT_ROOT=${PLOT_ROOT:-${PROJECT_ROOT}/channelpics}
 export INFERENCE_ROOT=${INFERENCE_ROOT:-${PROJECT_ROOT}/inference_results}
 
@@ -98,7 +98,7 @@ export EPOCHS=${EPOCHS:-90}
 export BATCH_SIZE=${BATCH_SIZE:-8}
 export NUM_WORKERS=${NUM_WORKERS:-4}
 export PREFETCH_FACTOR=${PREFETCH_FACTOR:-1}
-export BASE_LR=${BASE_LR:-2e-4}
+export BASE_LR=${BASE_LR:-1e-4}
 export MIN_LR=${MIN_LR:-1e-7}
 export WARMUP_EPOCHS=${WARMUP_EPOCHS:-5}
 export WEIGHT_DECAY=${WEIGHT_DECAY:-2e-5}
@@ -122,7 +122,7 @@ export L2_REG_WEIGHT=${L2_REG_WEIGHT:-0.0}
 
 # FuXi downstream loss. reference_norm should normally pair with 4e-3.
 export FUXI_LOSS_MODE=${FUXI_LOSS_MODE:-reference_norm}
-export CHANNEL_RMSE_WEIGHT=${CHANNEL_RMSE_WEIGHT:-4e-3}
+export CHANNEL_RMSE_WEIGHT=${CHANNEL_RMSE_WEIGHT:-8e-3}
 export RMSE_EVERY_N_STEPS=${RMSE_EVERY_N_STEPS:-1}
 export RMSE_SAMPLES_PER_BATCH=${RMSE_SAMPLES_PER_BATCH:-1}
 export FUXI_LEAD_HOURS=${FUXI_LEAD_HOURS:-6}

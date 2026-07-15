@@ -17,6 +17,149 @@ set -euo pipefail
 # This assumes checkpoints already exist under CHECKPOINT_ROOT/EXP_NAME/best.pth.
 #
 # =============================================================================
+# Per-phase eval commands expanded
+# =============================================================================
+#
+# 0 / smoke
+#   bash A2E/scripts/eval_one.sh smoke_gfs_refnorm \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=20250101 \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#
+# 1 / main
+#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
+#     EVAL_SOURCES=gfs,cma,hres \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_cma_refnorm \
+#     EVAL_SOURCES=gfs,cma,hres \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_hres_refnorm \
+#     EVAL_SOURCES=gfs,cma,hres \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_cma_hres_refnorm \
+#     EVAL_SOURCES=gfs,cma,hres \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#
+# 2 / loss_ablation
+#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_ab_wo_fuxi \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_ab_wo_grad \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_ab_l1_only \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_ab_wo_source_emb \
+#     EVAL_SOURCES=gfs,cma,hres \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#
+# 3 / data_scale
+#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_data20_refnorm \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_data40_refnorm \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_data60_refnorm \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_data80_refnorm \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#
+# 4 / source_mix / dual
+#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
+#     EVAL_SOURCES=gfs,cma,hres \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_cma_refnorm \
+#     EVAL_SOURCES=gfs,cma,hres \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_hres_refnorm \
+#     EVAL_SOURCES=gfs,cma,hres \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_cma_refnorm \
+#     EVAL_SOURCES=gfs,cma,hres \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_hres_refnorm \
+#     EVAL_SOURCES=gfs,cma,hres \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_cma_hres_refnorm \
+#     EVAL_SOURCES=gfs,cma,hres \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_cma_hres_refnorm \
+#     EVAL_SOURCES=gfs,cma,hres \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#
+# 5 / depth
+#   # The depth phase also runs profile_a2e.py for both experiments.
+#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_deep_refnorm \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#
+# 6 / parameter
+#   bash A2E/scripts/eval_one.sh A2Ec70_gradw_0p1 \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_gradw_0p2 \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_gradw_0p8 \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_refnorm_w1em3 \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_refnorm_w2em3 \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_refnorm_w4em3 \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#
+# =============================================================================
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 A2E_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
@@ -35,6 +178,7 @@ phase_name() {
     3|data|datascale|data_scale) echo data_scale ;;
     4|mix|source_mix|dual|dual_source) echo source_mix ;;
     5|depth|depth_scaling|scale|scaling) echo depth ;;
+    6|param|parameter) echo parameter ;;
     r|raw|raw_note) echo raw_note ;;
     a|all) echo all ;;
     *) echo "" ;;

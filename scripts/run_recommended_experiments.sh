@@ -83,9 +83,9 @@ phase_smoke() {
     "SOURCES=gfs" \
     "EPOCHS=1" \
     "VAL_SAMPLE_PER_MONTH=1" \
-    "RMSE_EVERY_N_STEPS=10" \
+    "RMSE_EVERY_N_STEPS=1" \
     "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+    "CHANNEL_RMSE_WEIGHT=8e-3"
 
   run_eval "smoke_gfs_refnorm" \
     "EVAL_SOURCES=gfs" \
@@ -102,25 +102,25 @@ phase_main() {
     "SOURCES=gfs" \
     "EPOCHS=90" \
     "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+    "CHANNEL_RMSE_WEIGHT=8e-3"
 
   run_train "A2Ec70_cma_refnorm" \
     "SOURCES=cma" \
     "EPOCHS=90" \
     "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+    "CHANNEL_RMSE_WEIGHT=8e-3"
 
   run_train "A2Ec70_hres_refnorm" \
     "SOURCES=hres" \
     "EPOCHS=90" \
     "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+    "CHANNEL_RMSE_WEIGHT=8e-3"
 
   run_train "A2Ec70_gfs_cma_hres_refnorm" \
     "SOURCES=gfs,cma,hres" \
     "EPOCHS=90" \
     "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+    "CHANNEL_RMSE_WEIGHT=8e-3"
 
   for exp in \
     A2Ec70_gfs_refnorm \
@@ -141,7 +141,7 @@ phase_main() {
 # -----------------------------------------------------------------------------
 phase_loss_ablation() {
   # Full baseline is reused from phase_main:
-  #   A2Ec70_gfs_refnorm = L1 + Grad + FuXi reference_norm, w=4e-3.
+  #   A2Ec70_gfs_refnorm = L1 + Grad + FuXi reference_norm, w=8e-3.
 
   run_train "A2Ec70_ab_wo_fuxi" \
     "SOURCES=gfs" \
@@ -157,7 +157,7 @@ phase_loss_ablation() {
     "USE_GRAD_LOSS=false" \
     "GRAD_LOSS_WEIGHT=0" \
     "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+    "CHANNEL_RMSE_WEIGHT=8e-3"
 
   run_train "A2Ec70_ab_l1_only" \
     "SOURCES=gfs" \
@@ -174,7 +174,7 @@ phase_loss_ablation() {
     "USING_TIME_EMBEDDING=true" \
     "USING_SOURCE_EMBEDDING=false" \
     "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+    "CHANNEL_RMSE_WEIGHT=8e-3"
 
   for exp in \
     A2Ec70_gfs_refnorm \
@@ -205,28 +205,28 @@ phase_data_scale() {
     "EPOCHS=90" \
     "TRAIN_SAMPLE_RATIO=0.2" \
     "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+    "CHANNEL_RMSE_WEIGHT=8e-3"
 
   run_train "A2Ec70_gfs_data40_refnorm" \
     "SOURCES=gfs" \
     "EPOCHS=90" \
     "TRAIN_SAMPLE_RATIO=0.4" \
     "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+    "CHANNEL_RMSE_WEIGHT=8e-3"
 
   run_train "A2Ec70_gfs_data60_refnorm" \
     "SOURCES=gfs" \
     "EPOCHS=90" \
     "TRAIN_SAMPLE_RATIO=0.6" \
     "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+    "CHANNEL_RMSE_WEIGHT=8e-3"
 
   run_train "A2Ec70_gfs_data80_refnorm" \
     "SOURCES=gfs" \
     "EPOCHS=90" \
     "TRAIN_SAMPLE_RATIO=0.8" \
     "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+    "CHANNEL_RMSE_WEIGHT=8e-3"
 
   for exp in \
     A2Ec70_gfs_data20_refnorm \
@@ -252,19 +252,19 @@ phase_source_mix() {
     "SOURCES=gfs,cma" \
     "EPOCHS=90" \
     "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+    "CHANNEL_RMSE_WEIGHT=8e-3"
 
   run_train "A2Ec70_gfs_hres_refnorm" \
     "SOURCES=gfs,hres" \
     "EPOCHS=90" \
     "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+    "CHANNEL_RMSE_WEIGHT=8e-3"
 
   run_train "A2Ec70_cma_hres_refnorm" \
     "SOURCES=cma,hres" \
     "EPOCHS=90" \
     "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+    "CHANNEL_RMSE_WEIGHT=8e-3"
 
   for exp in \
     A2Ec70_gfs_refnorm \
@@ -295,13 +295,58 @@ phase_depth_scaling() {
     "DEPTH=0,1,2" \
     "RES_PER_STAGE=1,1,2" \
     "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=4e-3"
+    "CHANNEL_RMSE_WEIGHT=8e-3"
 
   for exp in \
     A2Ec70_gfs_refnorm \
     A2Ec70_deep_refnorm
   do
     run_profile "${exp}"
+    run_eval "${exp}" \
+      "EVAL_SOURCES=gfs" \
+      "EVAL_DATES=${EVAL_DATES}" \
+      "EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl"
+  done
+}
+
+# -----------------------------------------------------------------------------
+# Phase 6: Parameter sensitivity
+# Purpose: robustness checks on GFS single-source.
+# Defaults reused from phase_main:
+#   grad_loss_weight=0.4, channel_rmse_weight=8e-3.
+# -----------------------------------------------------------------------------
+phase_parameter_study() {
+  for w in 0.1 0.2 0.8; do
+    tag=${w/./p}
+    run_train "A2Ec70_gradw_${tag}" \
+      "SOURCES=gfs" \
+      "EPOCHS=90" \
+      "USE_GRAD_LOSS=true" \
+      "GRAD_LOSS_WEIGHT=${w}" \
+      "FUXI_LOSS_MODE=reference_norm" \
+      "CHANNEL_RMSE_WEIGHT=8e-3"
+  done
+
+  for w in 1e-3 2e-3 4e-3; do
+    tag=${w/-/m}
+    run_train "A2Ec70_refnorm_w${tag}" \
+      "SOURCES=gfs" \
+      "EPOCHS=90" \
+      "USE_GRAD_LOSS=true" \
+      "GRAD_LOSS_WEIGHT=0.4" \
+      "FUXI_LOSS_MODE=reference_norm" \
+      "CHANNEL_RMSE_WEIGHT=${w}"
+  done
+
+  for exp in \
+    A2Ec70_gradw_0p1 \
+    A2Ec70_gradw_0p2 \
+    A2Ec70_gfs_refnorm \
+    A2Ec70_gradw_0p8 \
+    A2Ec70_refnorm_w1em3 \
+    A2Ec70_refnorm_w2em3 \
+    A2Ec70_refnorm_w4em3
+  do
     run_eval "${exp}" \
       "EVAL_SOURCES=gfs" \
       "EVAL_DATES=${EVAL_DATES}" \
@@ -338,6 +383,9 @@ case "${PHASE}" in
   depth|depth_scaling|scaling|scale)
     phase_depth_scaling
     ;;
+  parameter|param)
+    phase_parameter_study
+    ;;
   raw_note|raw)
     phase_raw_baseline_note
     ;;
@@ -349,6 +397,7 @@ case "${PHASE}" in
     phase_data_scale
     phase_source_mix
     phase_depth_scaling
+    phase_parameter_study
     ;;
   paper_min)
     phase_smoke
@@ -364,10 +413,11 @@ case "${PHASE}" in
     phase_data_scale
     phase_source_mix
     phase_depth_scaling
+    phase_parameter_study
     ;;
   *)
     echo "Unknown phase: ${PHASE}" >&2
-    echo "Available phases: smoke, main, loss_ablation, data_scale, source_mix, depth, raw_note, all, paper_min, paper_full" >&2
+    echo "Available phases: smoke, main, loss_ablation, data_scale, source_mix, depth, parameter, raw_note, all, paper_min, paper_full" >&2
     exit 2
     ;;
 esac

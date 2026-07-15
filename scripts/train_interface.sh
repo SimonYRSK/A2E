@@ -59,14 +59,24 @@ set -euo pipefail
 #   - A2Ec70_gfs_refnorm              [A2E-Lite, reused from main]
 #   - A2Ec70_deep_refnorm             [A2E-Deep]
 #
+# 6 / parameter
+#   Gradient loss weight and FuXi RMSE loss weight sensitivity, default source = GFS:
+#   - A2Ec70_gradw_0p1                [GRAD_LOSS_WEIGHT=0.1]
+#   - A2Ec70_gradw_0p2                [GRAD_LOSS_WEIGHT=0.2]
+#   - A2Ec70_gfs_refnorm              [default grad=0.4, rmse weight=8e-3, reused from main]
+#   - A2Ec70_gradw_0p8                [GRAD_LOSS_WEIGHT=0.8]
+#   - A2Ec70_refnorm_w1em3            [CHANNEL_RMSE_WEIGHT=1e-3]
+#   - A2Ec70_refnorm_w2em3            [CHANNEL_RMSE_WEIGHT=2e-3]
+#   - A2Ec70_refnorm_w4em3            [CHANNEL_RMSE_WEIGHT=4e-3]
+#
 # 8 / paper_min
 #   0 -> 1 -> 2 -> 3 -> 5
 #
 # 9 / paper_full
-#   0 -> 1 -> 2 -> 3 -> 4 -> 5
+#   0 -> 1 -> 2 -> 3 -> 4 -> 5 -> 6
 #
 # a / all
-#   raw_note + 0 + 1 + 2 + 3 + 4 + 5
+#   raw_note + 0 + 1 + 2 + 3 + 4 + 5 + 6
 #
 # r / raw
 #   print Raw baseline note only
@@ -90,6 +100,7 @@ phase_name() {
     3|data|datascale|data_scale) echo data_scale ;;
     4|mix|source_mix|dual|dual_source) echo source_mix ;;
     5|depth|depth_scaling|scale|scaling) echo depth ;;
+    6|param|parameter) echo parameter ;;
     r|raw|raw_note) echo raw_note ;;
     a|all) echo all ;;
     *) echo "" ;;
@@ -123,13 +134,14 @@ run_paper_min() {
 }
 
 run_paper_full() {
-  echo "将训练完整论文集合: 0(smoke) -> 1(main) -> 2(loss) -> 3(data_scale) -> 4(source_mix) -> 5(depth)"
+  echo "将训练完整论文集合: 0(smoke) -> 1(main) -> 2(loss) -> 3(data_scale) -> 4(source_mix) -> 5(depth) -> 6(parameter)"
   run_phase 0
   run_phase 1
   run_phase 2
   run_phase 3
   run_phase 4
   run_phase 5
+  run_phase 6
 }
 
 if [[ $# -eq 0 || "${1:-}" == "list" || "${1:-}" == "help" || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
