@@ -63,6 +63,7 @@ class Any2ERA5Dataset(Dataset):
         val_sample_per_month: int | None = None,
         val_sample_year: int | None = None,
         max_samples_per_year: int | None = None,
+        train_sample_ratio: float | None = None,
         sample_seed: int = 42,
     ):
         self.x_path = GFS_PATH if x_path is None else x_path
@@ -81,6 +82,7 @@ class Any2ERA5Dataset(Dataset):
         self.val_sample_per_month = val_sample_per_month
         self.val_sample_year = val_sample_year
         self.max_samples_per_year = max_samples_per_year
+        self.train_sample_ratio = train_sample_ratio
         self.sample_seed = int(sample_seed)
 
         self.ds_x = xr.open_zarr(self.x_path, consolidated=False)
@@ -147,6 +149,16 @@ class Any2ERA5Dataset(Dataset):
             if selected_ts:
                 common_times = pd.DatetimeIndex(sorted(selected_ts))
 
+        elif self.train_sample_ratio is not None and 0.0 < self.train_sample_ratio < 1.0:
+            rng = np.random.default_rng(self.sample_seed)
+            n_total = len(common_times)
+            n_keep = int(n_total * self.train_sample_ratio)
+            if n_keep < n_total:
+                idx = rng.choice(n_total, size=n_keep, replace=False)
+                # Ensure deterministic order
+                selected_ts = common_times.sort_values().to_series().iloc[idx].tolist()
+                common_times = pd.DatetimeIndex(sorted(selected_ts))
+
         self.time_list = common_times.tolist()
 
         self.align_ch()
@@ -181,6 +193,12 @@ class Any2ERA5Dataset(Dataset):
 
         x_np = x_data.values.astype(np.float32)
         y_np = y_data.values.astype(np.float32)
+
+        # FuXi initializes tp as zero, so A2E does not train or infer this channel.
+        if "tp" in self.target_channels:
+            tp_idx = self.target_channels.index("tp")
+            x_np[tp_idx] = 0.0
+            y_np[tp_idx] = 0.0
 
         if self.target_mode == "diff":
             y_np = y_np - x_np

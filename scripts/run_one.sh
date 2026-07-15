@@ -13,6 +13,7 @@ Usage:
 Examples:
   bash A2E/scripts/run_one.sh A2Ec70_cma_refnorm SOURCES=cma FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=4e-3
   bash A2E/scripts/run_one.sh A2Ec70_small CHANNELS=192,384,768 EMBED_DIM=192
+  bash A2E/scripts/run_one.sh A2Ec70_deep_refnorm SOURCES=gfs DEPTH=0,1,2 RES_PER_STAGE=1,1,2
 
 Common KEY=VALUE overrides:
   SOURCES=cma|gfs|hres|gfs,cma,hres
@@ -21,9 +22,12 @@ Common KEY=VALUE overrides:
   CHANNEL_RMSE_WEIGHT=4e-3
   CHANNELS=384,768,1536
   EMBED_DIM=384
+  DEPTH=0,0,1             A2E-Lite; use 0,1,2 for A2E-Deep
+  RES_PER_STAGE=1,1,1     A2E-Lite; use 1,1,2 for A2E-Deep
   USE_GRAD_LOSS=true|false
   USING_TIME_EMBEDDING=true|false
   USING_SOURCE_EMBEDDING=true|false
+  TRAIN_SAMPLE_RATIO=1.0      data-scale experiments use 0.2/0.4/0.6/0.8
 USAGE
 }
 
@@ -48,9 +52,9 @@ mkdir -p "${OUTPUT_ROOT}/${EXP_NAME}/metrics" "${CHECKPOINT_ROOT}/${EXP_NAME}" "
 LOG_PATH="${OUTPUT_ROOT}/${EXP_NAME}/train.log"
 CONFIG_PATH="${OUTPUT_ROOT}/${EXP_NAME}/metrics/launch_config.env"
 
-env | sort | grep -E '^(EXP_NAME|SOURCES|EPOCHS|BATCH_SIZE|BASE_LR|MIN_LR|WARMUP_EPOCHS|WEIGHT_DECAY|CHANNELS|EMBED_DIM|DEPTH|RES_PER_STAGE|FUXI_LOSS_MODE|CHANNEL_RMSE_WEIGHT|USE_GRAD_LOSS|GRAD_LOSS_WEIGHT|USING_TIME_EMBEDDING|USING_SOURCE_EMBEDDING|EVAL_VARIABLES|TRAIN_|VAL_|GFS_|HRES_|CMA_|ERA5_PATH|GFS_PATH|HRES_PATH|CMA_PATH|FUXI_DIR|OUTPUT_ROOT|CHECKPOINT_ROOT|TENSORBOARD_ROOT|PLOT_ROOT)=' > "${CONFIG_PATH}"
+env | sort | grep -E '^(EXP_NAME|SOURCES|EPOCHS|BATCH_SIZE|BASE_LR|MIN_LR|WARMUP_EPOCHS|WEIGHT_DECAY|CHANNELS|EMBED_DIM|DEPTH|RES_PER_STAGE|FUXI_LOSS_MODE|CHANNEL_RMSE_WEIGHT|USE_GRAD_LOSS|GRAD_LOSS_WEIGHT|USING_TIME_EMBEDDING|USING_SOURCE_EMBEDDING|TRAIN_SAMPLE_RATIO|EVAL_VARIABLES|EVAL_FORECAST_STEPS|PROFILE_|TRAIN_|VAL_|GFS_|HRES_|CMA_|ERA5_PATH|GFS_PATH|HRES_PATH|CMA_PATH|FUXI_DIR|CLIM_PATH|OUTPUT_ROOT|CHECKPOINT_ROOT|TENSORBOARD_ROOT|PLOT_ROOT)=' > "${CONFIG_PATH}"
 
-echo "[run_one] exp=${EXP_NAME} sources=${SOURCES} epochs=${EPOCHS} fuxi_loss=${FUXI_LOSS_MODE} channel_rmse_weight=${CHANNEL_RMSE_WEIGHT}"
+echo "[run_one] exp=${EXP_NAME} sources=${SOURCES} epochs=${EPOCHS} channels=${CHANNELS} depth=${DEPTH} res_per_stage=${RES_PER_STAGE} fuxi_loss=${FUXI_LOSS_MODE} channel_rmse_weight=${CHANNEL_RMSE_WEIGHT}"
 echo "[run_one] log=${LOG_PATH}"
 
 cd "${A2E_ROOT}"
@@ -90,6 +94,7 @@ torchrun \
   --val_sample_per_month "${VAL_SAMPLE_PER_MONTH}" \
   --val_sample_year "${VAL_SAMPLE_YEAR}" \
   --max_samples_per_year "${MAX_SAMPLES_PER_YEAR}" \
+  --train_sample_ratio "${TRAIN_SAMPLE_RATIO}" \
   --sample_seed "${SAMPLE_SEED}" \
   --img_size "${IMG_SIZE}" \
   --patch_size "${PATCH_SIZE}" \

@@ -46,8 +46,8 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 
-DEFAULT_GFS_PATH = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/gfs_2020_2025_c226_0p25_norm.zarr"
-DEFAULT_HRES_PATH = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/hres_2024_2025_c226_0p25_norm.zarr"
+DEFAULT_GFS_PATH = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/gfs.2022_2025_0p25.norm.zarr"
+DEFAULT_HRES_PATH = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/hres_0p25_2022_2025_c70.zarr"
 DEFAULT_CMA_PATH = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/cma_gfs_2020_2026.c226.norm.zarr"
 DEFAULT_ERA5_PATH = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/era5.2020_2025_norm.zarr"
 DEFAULT_FUXI_DIR = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/fuxi_inference/main/fuxi"
@@ -217,6 +217,7 @@ def build_arg_parser():
     parser.add_argument("--val_sample_per_month", type=int, default=4)
     parser.add_argument("--val_sample_year", type=int, default=2025)
     parser.add_argument("--max_samples_per_year", type=str, default="none")
+    parser.add_argument("--train_sample_ratio", type=float, default=1.0)
     parser.add_argument("--sample_seed", type=int, default=43)
 
     parser.add_argument("--img_size", type=str, default="721,1440")
@@ -340,6 +341,7 @@ def main():
                 source_name=source_name,
                 source_idx=source_idx,
                 max_samples_per_year=max_samples_per_year,
+                train_sample_ratio=args.train_sample_ratio,
                 sample_seed=args.sample_seed,
             )
         )
@@ -464,6 +466,8 @@ def main():
             "weight_decay": args.weight_decay,
             "betas": list(betas),
             "seed": args.seed,
+            "sample_seed": args.sample_seed,
+            "train_sample_ratio": args.train_sample_ratio,
             "num_workers": args.num_workers,
             "prefetch_factor": args.prefetch_factor,
             "use_amp": args.use_amp,

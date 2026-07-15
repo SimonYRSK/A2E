@@ -1,1148 +1,772 @@
-# A2E-c70 实验调度说明
+# A2E-c70 实验运行说明
 
-本文档说明当前 A2E-c70 实验脚本的组织方式、输出目录、推荐运行顺序，以及训练/评测结果会保存到哪里。
+本文档优先说明：**怎么运行各组实验、怎么单独运行某个实验、结果保存在哪里、如何评估和汇总指标**。
 
----
+当前推荐入口是：
 
-## 1. 当前新增的核心文件
-
-```text
-A2E/
-├── configs/
-│   └── common.sh                         # 统一实验默认配置
-├── scripts/
-│   ├── run_one.sh                        # 启动单个训练实验
-│   ├── eval_one.sh                       # 评测单个实验 checkpoint
-│   └── run_recommended_experiments.sh    # 按推荐顺序组织整套实验
-├── eval/
-│   └── eval_a2e_fields.py                # 计算场映射 RMSE/ACC
-├── trainers/
-│   └── fsdptrain_align_metrics.py        # trainer 副本，额外保存 CSV/JSON 指标
-├── main_res_exp.py                       # 参数化训练入口，不改原 main_res.py
-└── fuxi_rmse_interface_new.py            # 支持 manual_weighted/raw_mean/reference_norm；推荐实验脚本只使用 raw_mean/reference_norm
+```bash
+bash A2E/scripts/run_interface.sh
 ```
 
-原始文件仍然保留：
+默认都是 dry-run，只打印命令，不真正执行。真正执行需要加：
 
-```text
-main_res.py
-trainers/fsdptrain_align.py
-```
-
-当前推荐使用：
-
-```text
-main_res_exp.py
-scripts/run_one.sh
-scripts/eval_one.sh
-scripts/run_recommended_experiments.sh
+```bash
+RUN=1
 ```
 
 ---
 
-## 2. 实验名 EXP_NAME 是核心索引
+## 1. 最常用命令
 
-每个实验都由一个实验名 `EXP_NAME` 区分，例如：
+### 1.1 查看所有实验编号
+
+```bash
+bash A2E/scripts/run_interface.sh list
+```
+
+或者：
+
+```bash
+bash A2E/scripts/run_interface.sh
+```
+
+### 1.2 预览某组实验，不真正运行
+
+```bash
+bash A2E/scripts/run_interface.sh 1
+```
+
+例如预览主实验：
+
+```bash
+bash A2E/scripts/run_interface.sh main
+```
+
+### 1.3 真正运行某组实验
+
+```bash
+RUN=1 bash A2E/scripts/run_interface.sh 1
+```
+
+如果端口冲突，指定不同 `MASTER_PORT`：
+
+```bash
+MASTER_PORT=29517 RUN=1 bash A2E/scripts/run_interface.sh 1
+```
+
+### 1.4 一次运行多组实验
+
+```bash
+RUN=1 bash A2E/scripts/run_interface.sh 1 2 3
+```
+
+这会依次运行：
 
 ```text
+main -> loss_ablation -> fuxi_loss
+```
+
+### 1.5 只跑 smoke test
+
+```bash
+MASTER_PORT=29517 RUN=1 bash A2E/scripts/run_interface.sh 0
+```
+
+### 1.6 只跑主实验
+
+```bash
+MASTER_PORT=29518 RUN=1 bash A2E/scripts/run_interface.sh 1
+```
+
+### 1.7 只跑 loss 消融
+
+```bash
+MASTER_PORT=29519 RUN=1 bash A2E/scripts/run_interface.sh 2
+```
+
+### 1.8 只跑模型规模 / 深度实验
+
+```bash
+MASTER_PORT=29520 RUN=1 bash A2E/scripts/run_interface.sh 5
+```
+
+`5 / scale` 会额外统计：
+
+```text
+params
+FLOPs / MACs
+A2E forward latency
+```
+
+---
+
+## 2. 实验编号总表
+
+| 编号 | 名称 | 内容 | 是否训练 | 是否评估 |
+|---:|---|---|---|---|
+| `0` | `smoke` | 快速流程测试 | 是 | 是 |
+| `1` | `main` | 主实验：GFS/CMA/HRES 单源 + 三源联合 | 是 | 是 |
+| `2` | `loss` / `loss_ablation` | L1 / Grad / FuXi loss 消融 | 是，复用 full baseline | 是 |
+| `3` | `fuxi` / `fuxi_loss` | FuXi loss 形式消融 | 是，复用 reference baseline | 是 |
+| `4` | `emb` / `embedding` | Time / Source embedding 消融 | 是，复用 multi-source full | 是 |
+| `5` | `scale` / `scaling` / `depth` | 宽度规模 + 深度 scaling | 是，复用 A2E-Lite | 是，并 profile |
+| `6` | `param` / `parameter` | 超参数敏感性 | 是 | 是 |
+| `7` | `dual` / `dual_source` | 双源组合，可选 | 是 | 是 |
+| `8` | `paper_min` | smoke + main + loss + fuxi + scale | 是 | 是 |
+| `9` | `paper_full` | smoke + main + loss + fuxi + emb + scale + param | 是 | 是 |
+| `a` | `all` | raw_note + 0 + 1 + 2 + 3 + 4 + 5 + 6 | 是 | 是 |
+| `r` | `raw` / `raw_note` | Raw baseline 提醒 | 否 | 否 |
+
+---
+
+## 3. 推荐运行顺序
+
+### Step 0：先 smoke
+
+```bash
+MASTER_PORT=29517 RUN=1 bash A2E/scripts/run_interface.sh 0
+```
+
+确认以下内容都能正常生成：
+
+```text
+train.log
+best.pth
+metrics/config.json
+metrics/epoch_metrics.csv
+eval/fuxi_rollout_metrics_summary.csv
+eval/a2e_initial_metrics_summary.csv
+```
+
+### Step 1：主实验
+
+```bash
+MASTER_PORT=29518 RUN=1 bash A2E/scripts/run_interface.sh 1
+```
+
+训练并评估：
+
+```text
+A2Ec70_gfs_refnorm
 A2Ec70_cma_refnorm
-A2Ec70_ab_wo_fuxi
-A2Ec70_fuxi_rawmean_w5e4
-A2Ec70_small_refnorm
+A2Ec70_hres_refnorm
+A2Ec70_gfs_cma_hres_refnorm
 ```
 
-训练和评测结果都会根据这个实验名保存到对应目录。
-
-例如运行：
+### Step 2：核心 loss 消融
 
 ```bash
-bash A2E/scripts/run_one.sh A2Ec70_cma_refnorm SOURCES=cma
+MASTER_PORT=29519 RUN=1 bash A2E/scripts/run_interface.sh 2
 ```
 
-那么该实验的输出会保存在：
+训练并评估：
 
 ```text
-OUTPUT_ROOT/A2Ec70_cma_refnorm/
-CHECKPOINT_ROOT/A2Ec70_cma_refnorm/
-TENSORBOARD_ROOT/A2Ec70_cma_refnorm/
-PLOT_ROOT/A2Ec70_cma_refnorm/
+A2Ec70_gfs_refnorm          # full baseline，复用 main
+A2Ec70_ab_wo_fuxi
+A2Ec70_ab_wo_grad
+A2Ec70_ab_l1_only
 ```
 
-注意：这里的 `OUTPUT_ROOT`、`CHECKPOINT_ROOT`、`TENSORBOARD_ROOT`、`PLOT_ROOT` 不是固定等于本地 `E:/myrepo/A2E`，而是由 `configs/common.sh` 定义。
-
-默认配置在 `configs/common.sh` 中：
+### Step 3：FuXi loss mode 消融
 
 ```bash
-OUTPUT_ROOT=${PROJECT_ROOT}/experiments
-CHECKPOINT_ROOT=${PROJECT_ROOT}/checkpoints
-TENSORBOARD_ROOT=/home/ximutian/tensorboard_logs
-PLOT_ROOT=${PROJECT_ROOT}/channelpics
+MASTER_PORT=29520 RUN=1 bash A2E/scripts/run_interface.sh 3
 ```
 
-如果你想临时改输出位置，可以运行时覆盖：
+训练并评估：
+
+```text
+A2Ec70_fuxi_rawmean_w5e4
+A2Ec70_gfs_refnorm          # reference_norm baseline，复用 main
+```
+
+### Step 4：模型规模 / 深度 scaling
 
 ```bash
-OUTPUT_ROOT=/some/path/experiments \
-CHECKPOINT_ROOT=/some/path/checkpoints \
-bash A2E/scripts/run_one.sh A2Ec70_test SOURCES=cma
+MASTER_PORT=29521 RUN=1 bash A2E/scripts/run_interface.sh 5
+```
+
+训练、评估并 profile：
+
+```text
+A2Ec70_small_refnorm        # width small
+A2Ec70_base_refnorm         # width base
+A2Ec70_gfs_refnorm          # A2E-Lite，复用 main
+A2Ec70_deep_refnorm         # A2E-Deep
+```
+
+### Step 5：embedding 消融
+
+```bash
+MASTER_PORT=29522 RUN=1 bash A2E/scripts/run_interface.sh 4
+```
+
+训练并评估：
+
+```text
+A2Ec70_gfs_cma_hres_refnorm # multi-source full，复用 main
+A2Ec70_ms_wo_time_emb
+A2Ec70_ms_wo_source_emb
+```
+
+### Step 6：参数敏感性
+
+```bash
+MASTER_PORT=29523 RUN=1 bash A2E/scripts/run_interface.sh 6
+```
+
+训练并评估：
+
+```text
+A2Ec70_gradw_0p1
+A2Ec70_gradw_0p2
+A2Ec70_gradw_0p8
+A2Ec70_refnorm_w1em3
+A2Ec70_refnorm_w2em3
+A2Ec70_refnorm_w8em3
 ```
 
 ---
 
-## 3. `common.sh` 是统一默认配置
+## 4. 各组实验具体内容
 
-文件：
+### 4.1 `0 / smoke`
 
 ```text
-A2E/configs/common.sh
+smoke_gfs_refnorm
 ```
 
-这里保存所有实验的公共默认配置，包括：
+配置：
 
-### 数据路径
-
-```bash
-ERA5_PATH
-GFS_PATH
-HRES_PATH
-CMA_PATH
-FUXI_DIR
-CLIM_PATH
-```
-
-### 数据划分
-
-```bash
-TRAIN_START=2022-01-01 00:00:00
-TRAIN_END=2024-12-31 18:00:00
-VAL_START=2025-01-01 00:00:00
-VAL_END=2025-11-20 18:00:00
-```
-
-其中 HRES 默认只有 2024 年训练数据：
-
-```bash
-HRES_TRAIN_START=2024-01-01 00:00:00
-HRES_TRAIN_END=2024-12-31 18:00:00
-```
-
-### 模型配置
-
-```bash
-CHANNELS=384,768,1536
-EMBED_DIM=384
-DEPTH=0,0,1
-RES_PER_STAGE=1,1,1
-USING_TIME_EMBEDDING=true
-USING_SOURCE_EMBEDDING=true
-```
-
-### 训练配置
-
-根据当前主实验现象，默认 epoch 改成 90：
-
-```bash
-EPOCHS=90
-BATCH_SIZE=8
-BASE_LR=2e-4
-MIN_LR=1e-7
-WARMUP_EPOCHS=5
-WEIGHT_DECAY=2e-5
-```
-
-### Loss 配置
-
-默认主方法为 FuXi-ERA5 reference normalization：
-
-```bash
+```text
+SOURCES=gfs
+EPOCHS=1
+VAL_SAMPLE_PER_MONTH=1
+RMSE_EVERY_N_STEPS=10
 FUXI_LOSS_MODE=reference_norm
 CHANNEL_RMSE_WEIGHT=4e-3
-USE_GRAD_LOSS=true
-GRAD_LOSS_WEIGHT=0.4
 ```
 
-### 评测变量
-
-导师提到的 `Q700` 已修正为 `r700`：
-
-```bash
-EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
-```
-
-其中：
+评估：
 
 ```text
-ws10m = sqrt(u10m^2 + v10m^2)
+EVAL_SOURCES=gfs
+EVAL_DATES=20250101
+EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
 ```
 
 ---
 
-## 4. `run_one.sh`：启动单个训练实验
+### 4.2 `1 / main`
 
-文件：
+主实验包含四个子实验：
+
+| EXP_NAME | 训练 sources | 说明 |
+|---|---|---|
+| `A2Ec70_gfs_refnorm` | `gfs` | GFS 单源 A2E-Lite / canonical single-source full |
+| `A2Ec70_cma_refnorm` | `cma` | CMA 单源 |
+| `A2Ec70_hres_refnorm` | `hres` | HRES 单源 |
+| `A2Ec70_gfs_cma_hres_refnorm` | `gfs,cma,hres` | 三源联合 full |
+
+默认训练配置：
 
 ```text
-A2E/scripts/run_one.sh
+EPOCHS=90
+FUXI_LOSS_MODE=reference_norm
+CHANNEL_RMSE_WEIGHT=4e-3
+DEPTH=0,0,1
+RES_PER_STAGE=1,1,1
+CHANNELS=384,768,1536
+EMBED_DIM=384
 ```
 
-用法：
+主实验评估会对每个 checkpoint 测：
 
-```bash
-bash A2E/scripts/run_one.sh EXP_NAME KEY=VALUE KEY=VALUE ...
+```text
+EVAL_SOURCES=gfs,cma,hres
+EVAL_DATES=20250101:20251122
+EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
 ```
 
-示例：
+---
+
+### 4.3 `2 / loss_ablation`
+
+| EXP_NAME | 说明 |
+|---|---|
+| `A2Ec70_gfs_refnorm` | Full baseline，复用 main |
+| `A2Ec70_ab_wo_fuxi` | L1 + Grad，无 FuXi downstream loss |
+| `A2Ec70_ab_wo_grad` | L1 + FuXi，无 Grad loss |
+| `A2Ec70_ab_l1_only` | L1 only |
+
+全部基于：
+
+```text
+SOURCES=gfs
+```
+
+---
+
+### 4.4 `3 / fuxi_loss`
+
+| EXP_NAME | FuXi loss mode | Channel RMSE weight | 说明 |
+|---|---|---:|---|
+| `A2Ec70_fuxi_rawmean_w5e4` | `raw_mean` | `5e-4` | raw RMSE mean |
+| `A2Ec70_gfs_refnorm` | `reference_norm` | `4e-3` | 推荐主方法，复用 main |
+
+---
+
+### 4.5 `4 / embedding`
+
+| EXP_NAME | 训练 sources | Time Emb | Source Emb |
+|---|---|---|---|
+| `A2Ec70_gfs_cma_hres_refnorm` | `gfs,cma,hres` | 开 | 开 |
+| `A2Ec70_ms_wo_time_emb` | `gfs,cma,hres` | 关 | 开 |
+| `A2Ec70_ms_wo_source_emb` | `gfs,cma,hres` | 开 | 关 |
+
+---
+
+### 4.6 `5 / scale`
+
+`scale` 包含 width scaling 和 depth scaling，全部基于：
+
+```text
+SOURCES=gfs
+```
+
+| EXP_NAME | 作用 | EMBED_DIM | CHANNELS | DEPTH | RES_PER_STAGE |
+|---|---|---:|---|---|---|
+| `A2Ec70_small_refnorm` | width small | 192 | `192,384,768` | `0,0,1` | `1,1,1` |
+| `A2Ec70_base_refnorm` | width base | 256 | `256,512,1024` | `0,0,1` | `1,1,1` |
+| `A2Ec70_gfs_refnorm` | A2E-Lite，复用 main | 384 | `384,768,1536` | `0,0,1` | `1,1,1` |
+| `A2Ec70_deep_refnorm` | A2E-Deep | 384 | `384,768,1536` | `0,1,2` | `1,1,2` |
+
+这个阶段会额外输出每个模型的：
+
+```text
+params
+FLOPs / MACs
+A2E forward latency
+peak CUDA memory
+```
+
+---
+
+### 4.7 `6 / parameter`
+
+#### Grad loss weight
+
+| EXP_NAME | GRAD_LOSS_WEIGHT |
+|---|---:|
+| `A2Ec70_gradw_0p1` | 0.1 |
+| `A2Ec70_gradw_0p2` | 0.2 |
+| `A2Ec70_gfs_refnorm` | 0.4，复用 main |
+| `A2Ec70_gradw_0p8` | 0.8 |
+
+#### FuXi reference_norm loss weight
+
+| EXP_NAME | CHANNEL_RMSE_WEIGHT |
+|---|---:|
+| `A2Ec70_refnorm_w1em3` | 1e-3 |
+| `A2Ec70_refnorm_w2em3` | 2e-3 |
+| `A2Ec70_gfs_refnorm` | 4e-3，复用 main |
+| `A2Ec70_refnorm_w8em3` | 8e-3 |
+
+---
+
+### 4.8 `7 / dual_source`
+
+可选，不包含在 `all` 中。
+
+| EXP_NAME | 训练 sources |
+|---|---|
+| `A2Ec70_gfs_cma_refnorm` | `gfs,cma` |
+| `A2Ec70_gfs_hres_refnorm` | `gfs,hres` |
+| `A2Ec70_cma_hres_refnorm` | `cma,hres` |
+
+运行：
 
 ```bash
-bash A2E/scripts/run_one.sh A2Ec70_cma_refnorm \
-  SOURCES=cma \
+MASTER_PORT=29524 RUN=1 bash A2E/scripts/run_interface.sh 7
+```
+
+---
+
+## 5. 单独运行某个训练实验
+
+如果你不想通过编号组运行，也可以直接运行单个实验。
+
+### 5.1 单独训练 GFS 主模型
+
+```bash
+MASTER_PORT=29517 RUN=1 bash A2E/scripts/run_one.sh A2Ec70_gfs_refnorm \
+  SOURCES=gfs \
   EPOCHS=90 \
   FUXI_LOSS_MODE=reference_norm \
   CHANNEL_RMSE_WEIGHT=4e-3
 ```
 
-`run_one.sh` 的执行流程：
+### 5.2 单独训练 A2E-Deep
 
-```text
-1. source configs/common.sh，加载统一默认配置
-2. 读取 EXP_NAME
-3. 读取 KEY=VALUE 覆盖项
-4. 创建输出目录
-5. 保存 shell 启动配置 launch_config.env
-6. torchrun 启动 main_res_exp.py
-7. 保存训练日志 train.log
+```bash
+MASTER_PORT=29518 RUN=1 bash A2E/scripts/run_one.sh A2Ec70_deep_refnorm \
+  SOURCES=gfs \
+  EPOCHS=90 \
+  EMBED_DIM=384 \
+  CHANNELS=384,768,1536 \
+  DEPTH=0,1,2 \
+  RES_PER_STAGE=1,1,2 \
+  FUXI_LOSS_MODE=reference_norm \
+  CHANNEL_RMSE_WEIGHT=4e-3
+```
+
+### 5.3 单独训练一个 loss 消融
+
+```bash
+MASTER_PORT=29519 RUN=1 bash A2E/scripts/run_one.sh A2Ec70_ab_wo_fuxi \
+  SOURCES=gfs \
+  EPOCHS=90 \
+  USE_GRAD_LOSS=true \
+  GRAD_LOSS_WEIGHT=0.4 \
+  FUXI_LOSS_MODE=reference_norm \
+  CHANNEL_RMSE_WEIGHT=0
 ```
 
 ---
 
-## 5. 单个训练实验会保存什么？
+## 6. 单独评估某个实验
 
-假设：
-
-```text
-EXP_NAME=A2Ec70_cma_refnorm
-```
-
-训练后会保存：
-
-```text
-OUTPUT_ROOT/A2Ec70_cma_refnorm/
-├── train.log
-└── metrics/
-    ├── launch_config.env
-    ├── config.json
-    └── epoch_metrics.csv
-
-CHECKPOINT_ROOT/A2Ec70_cma_refnorm/
-└── best.pth
-
-TENSORBOARD_ROOT/A2Ec70_cma_refnorm/
-└── events.out.tfevents...
-
-PLOT_ROOT/A2Ec70_cma_refnorm/
-└── ...
-```
-
-### `metrics/launch_config.env`
-
-由 `run_one.sh` 保存，记录 shell 层面的启动变量，例如：
-
-```text
-SOURCES=cma
-EPOCHS=90
-CHANNELS=384,768,1536
-FUXI_LOSS_MODE=reference_norm
-CHANNEL_RMSE_WEIGHT=4e-3
-```
-
-### `metrics/config.json`
-
-由 `main_res_exp.py` 和 `fsdptrain_align_metrics.py` 保存。
-
-它记录 Python 训练代码实际使用的最终配置，包括：
-
-```text
-数据路径
-训练/验证时间段
-sources
-模型结构
-训练超参数
-loss 配置
-FuXi reference RMSE
-checkpoint/tensorboard/metrics 路径
-```
-
-这个文件用于复现实验。
-
-### `metrics/epoch_metrics.csv`
-
-由 `fsdptrain_align_metrics.py` 每个 epoch 追加一行。
-
-字段包括：
-
-```text
-epoch
-train_loss
-val_loss
-lr
-seconds
-fuxi_loss_mode
-channel_rmse_weight
-grad_loss_weight
-use_grad_loss
-sources
-channels
-depth
-epochs
-```
-
-这个文件用于汇总训练过程、画收敛曲线、统计训练时间。
-
-### `train.log`
-
-保存完整终端训练输出。
-
-### `best.pth`
-
-保存验证集 loss 最优的 checkpoint。
-
-### TensorBoard
-
-仍然会有 TensorBoard。
-
-默认路径：
-
-```text
-TENSORBOARD_ROOT/EXP_NAME/
-```
-
-例如：
-
-```text
-/home/ximutian/tensorboard_logs/A2Ec70_cma_refnorm/
-```
-
-可以用：
-
-```bash
-tensorboard --logdir /home/ximutian/tensorboard_logs
-```
-
-查看所有实验。
-
----
-
-## 6. `eval_one.sh`：评测单个实验
-
-文件：
-
-```text
-A2E/scripts/eval_one.sh
-```
-
-用法：
-
-```bash
-bash A2E/scripts/eval_one.sh EXP_NAME KEY=VALUE ...
-```
-
-示例：
-
-```bash
-bash A2E/scripts/eval_one.sh A2Ec70_cma_refnorm \
-  EVAL_SOURCES=cma \
-  EVAL_DATES=20250101,20250105 \
-  EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
-```
-
-默认读取：
+评估默认使用：
 
 ```text
 CHECKPOINT_ROOT/EXP_NAME/best.pth
 OUTPUT_ROOT/EXP_NAME/metrics/config.json
 ```
 
+例如单独评估 GFS 主模型：
+
+```bash
+RUN=1 bash A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
+  EVAL_SOURCES=gfs \
+  EVAL_DATES=20250101:20251122 \
+  EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+```
+
 如果要指定 checkpoint：
 
 ```bash
-bash A2E/scripts/eval_one.sh A2Ec70_cma_refnorm \
-  CKPT=/path/to/best.pth \
-  EVAL_SOURCES=cma
+RUN=1 bash A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
+  CKPT=/path/to/checkpoint_epoch_50.pth \
+  EVAL_SOURCES=gfs \
+  EVAL_DATES=20250101,20250201,20250301
 ```
 
-评测输出目录：
+`EVAL_DATES` 支持两种格式：
 
 ```text
-OUTPUT_ROOT/EXP_NAME/eval/
-```
-
-输出文件：
-
-```text
-OUTPUT_ROOT/EXP_NAME/eval/
-├── eval.log
-├── field_metrics_detail.csv
-└── field_metrics_summary.csv
-```
-
-### `field_metrics_detail.csv`
-
-逐时间、逐 source、逐变量保存：
-
-```text
-experiment
-source
-time
-variable
-rmse
-acc
-```
-
-例如：
-
-```text
-A2Ec70_cma_refnorm,cma,2025-01-01,z500,xxx,xxx
-A2Ec70_cma_refnorm,cma,2025-01-01,t2m,xxx,xxx
-A2Ec70_cma_refnorm,cma,2025-01-01,r700,xxx,xxx
-```
-
-### `field_metrics_summary.csv`
-
-按 source 和变量汇总平均：
-
-```text
-experiment
-source
-variable
-rmse_mean
-acc_mean
-n_rmse
-n_acc
+20250101,20250201,20250301      # 手动列日期
+20250101:20251122              # 每天一个 init date
 ```
 
 ---
 
-## 7. `eval_one.sh` 是否和 `run_recommended_experiments.sh` 结合了？
+## 7. 保存结构
 
-是，已经结合。
-
-文件：
-
-```text
-A2E/scripts/run_recommended_experiments.sh
-```
-
-里面定义了两个函数：
+默认根目录在 [configs/common.sh](configs/common.sh)：
 
 ```bash
-run_train() {
-  bash A2E/scripts/run_one.sh EXP_NAME ...
-}
-
-run_eval() {
-  bash A2E/scripts/eval_one.sh EXP_NAME ...
-}
+PROJECT_ROOT=/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/Formal
+OUTPUT_ROOT=${PROJECT_ROOT}/experiments
+CHECKPOINT_ROOT=${PROJECT_ROOT}/checkpoints
+TENSORBOARD_ROOT=/home/ximutian/tensorboard_logs
+PLOT_ROOT=${PROJECT_ROOT}/channelpics
 ```
 
-在推荐实验的每个阶段，训练结束后会调用对应的评测。
+以 `A2Ec70_gfs_refnorm` 为例。
 
-例如 main 阶段中会先训练：
+### 7.1 训练输出
 
 ```text
-A2Ec70_gfs_refnorm
-A2Ec70_cma_refnorm
-A2Ec70_hres_refnorm
-A2Ec70_gfs_cma_hres_refnorm
-```
-
-然后会对这些实验调用：
-
-```bash
-bash A2E/scripts/eval_one.sh EXP_NAME \
-  EVAL_SOURCES=gfs,cma,hres \
-  EVAL_DATES=${EVAL_DATES} \
-  EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
-```
-
-所以：
-
-```text
-run_recommended_experiments.sh = 组织总流程
-run_one.sh = 单个训练
-eval_one.sh = 单个评测
-```
-
----
-
-## 8. `run_recommended_experiments.sh`：推荐实验顺序
-
-文件：
-
-```text
-A2E/scripts/run_recommended_experiments.sh
-```
-
-默认 dry-run，只打印命令，不执行。
-
-查看所有命令：
-
-```bash
-bash A2E/scripts/run_recommended_experiments.sh all
-```
-
-真正执行：
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh all
-```
-
-推荐不要一开始直接跑 `all`，而是分阶段跑。
-
----
-
-## 9. 重点：推荐实验阶段细分
-
-`run_recommended_experiments.sh` 当前把实验拆成 9 个 phase：
-
-```text
-raw_note
-smoke
-main
-dual_source
-loss_ablation
-fuxi_loss
-embedding
-scaling
-parameter
-all
-```
-
-其中你前面列出的 `all` 默认顺序是：
-
-```text
-1. raw_note
-2. smoke
-3. main
-4. loss_ablation
-5. fuxi_loss
-6. embedding
-7. scaling
-8. parameter
-```
-
-注意：`dual_source` 是可选阶段，**不在 `all` 里默认执行**，需要单独运行。
-
----
-
-### 9.1 `raw_note`：Raw baseline 提醒
-
-运行命令：
-
-```bash
-bash A2E/scripts/run_recommended_experiments.sh raw_note
-```
-
-这个阶段不训练模型，只打印提醒：
-
-```text
-Raw GFS / CMA / HRES baseline 在 checklist 中标记为已完成。
-当前脚本主要负责 A2E 模型训练与 A2E checkpoint 评测。
-Raw source-vs-ERA5 baseline 后续如需统一入表，建议单独写 raw-eval 脚本。
-```
-
-Raw baseline 最终也应统一保存这些变量：
-
-```text
-z500, t2m, tp, ws10m, msl, r700
-```
-
----
-
-### 9.2 `smoke`：流程测试
-
-运行命令：
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh smoke
-```
-
-包含实验：
-
-| EXP_NAME | Sources | Epochs | FuXi loss mode | Channel RMSE weight | 目的 |
-|---|---|---:|---|---:|---|
-| `smoke_cma_refnorm` | `cma` | 1 | `reference_norm` | `4e-3` | 检查训练、checkpoint、config、CSV、eval 是否能跑通 |
-
-额外覆盖：
-
-```text
-VAL_SAMPLE_PER_MONTH=1
-RMSE_EVERY_N_STEPS=10
-```
-
-评测：
-
-```text
-EVAL_SOURCES=cma
-EVAL_DATES=20250101
-EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
-```
-
----
-
-### 9.3 `main`：主实验
-
-运行命令：
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh main
-```
-
-包含实验：
-
-| EXP_NAME | 训练 sources | Epochs | FuXi loss mode | Channel RMSE weight | 作用 |
-|---|---|---:|---|---:|---|
-| `A2Ec70_gfs_refnorm` | `gfs` | 90 | `reference_norm` | `4e-3` | GFS-only 单源模型 |
-| `A2Ec70_cma_refnorm` | `cma` | 90 | `reference_norm` | `4e-3` | CMA-only 单源模型 |
-| `A2Ec70_hres_refnorm` | `hres` | 90 | `reference_norm` | `4e-3` | HRES-only 单源模型 |
-| `A2Ec70_gfs_cma_hres_refnorm` | `gfs,cma,hres` | 90 | `reference_norm` | `4e-3` | 三源联合主模型 |
-
-统一评测：
-
-```text
-EVAL_SOURCES=gfs,cma,hres
-EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
-```
-
-这个阶段是论文主结果的核心，用来回答：
-
-```text
-1. A2E 相比 Raw source 是否有效？
-2. 单源模型分别表现如何？
-3. 多源联合训练是否带来平均收益？
-```
-
----
-
-### 9.4 `dual_source`：双源组合实验，可选
-
-运行命令：
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh dual_source
-```
-
-包含实验：
-
-| EXP_NAME | 训练 sources | Epochs | FuXi loss mode | Channel RMSE weight | 作用 |
-|---|---|---:|---|---:|---|
-| `A2Ec70_gfs_cma_refnorm` | `gfs,cma` | 90 | `reference_norm` | `4e-3` | GFS+CMA 双源 |
-| `A2Ec70_gfs_hres_refnorm` | `gfs,hres` | 90 | `reference_norm` | `4e-3` | GFS+HRES 双源 |
-| `A2Ec70_cma_hres_refnorm` | `cma,hres` | 90 | `reference_norm` | `4e-3` | CMA+HRES 双源 |
-
-统一评测：
-
-```text
-EVAL_SOURCES=gfs,cma,hres
-EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
-```
-
-这个阶段用于补充说明不同 source 组合的贡献。由于训练成本较高，不默认包含在 `all` 中。
-
----
-
-### 9.5 `loss_ablation`：核心 loss 消融
-
-运行命令：
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh loss_ablation
-```
-
-包含实验：
-
-| EXP_NAME | Sources | L1 | Grad Loss | FuXi Loss | FuXi loss mode | Channel RMSE weight | 作用 |
-|---|---|---|---|---|---|---:|---|
-| `A2Ec70_cma_refnorm` | `cma` | ✓ | ✓ | ✓ | `reference_norm` | `4e-3` | 完整模型；复用 main 阶段 canonical CMA full |
-| `A2Ec70_ab_wo_fuxi` | `cma` | ✓ | ✓ | ✗ | `reference_norm` | `0` | 去除 FuXi downstream loss |
-| `A2Ec70_ab_wo_grad` | `cma` | ✓ | ✗ | ✓ | `reference_norm` | `4e-3` | 去除 gradient loss |
-| `A2Ec70_ab_l1_only` | `cma` | ✓ | ✗ | ✗ | `reference_norm` | `0` | 仅 L1 baseline |
-
-统一评测：
-
-```text
-EVAL_SOURCES=cma
-EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
-```
-
-这个阶段用来证明：
-
-```text
-Grad Loss 和 FuXi downstream Loss 各自是否有效。
-```
-
----
-
-### 9.6 `fuxi_loss`：FuXi loss mode 消融
-
-运行命令：
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh fuxi_loss
-```
-
-包含实验：
-
-| EXP_NAME | Sources | FuXi loss mode | Channel RMSE weight | 公式含义 | 作用 |
-|---|---|---|---:|---|---|
-| `A2Ec70_fuxi_rawmean_w5e4` | `cma` | `raw_mean` | `5e-4` | 直接平均 raw RMSE | 不做尺度归一化对照 |
-| `A2Ec70_cma_refnorm` | `cma` | `reference_norm` | `4e-3` | RMSE / FuXi-ERA5 reference RMSE 后平均 | 推荐主方法；复用 main 阶段 canonical CMA full |
-
-统一评测：
-
-```text
-EVAL_SOURCES=cma
-EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
-```
-
-这个阶段是 FuXi loss 设计严谨性的核心证据。`manual_weighted` 是历史方案，当前推荐实验不再单独训练，避免增加不必要对照。
-
----
-
-### 9.7 `embedding`：Time / Source embedding 消融
-
-运行命令：
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh embedding
-```
-
-包含实验：
-
-| EXP_NAME | Sources | Time Emb | Source Emb | FuXi loss mode | Channel RMSE weight | 作用 |
-|---|---|---|---|---|---:|---|
-| `A2Ec70_gfs_cma_hres_refnorm` | `gfs,cma,hres` | ✓ | ✓ | `reference_norm` | `4e-3` | 多源完整模型；复用 main 阶段 canonical multi-source full |
-| `A2Ec70_ms_wo_time_emb` | `gfs,cma,hres` | ✗ | ✓ | `reference_norm` | `4e-3` | 去除时间嵌入 |
-| `A2Ec70_ms_wo_source_emb` | `gfs,cma,hres` | ✓ | ✗ | `reference_norm` | `4e-3` | 去除源域嵌入 |
-
-统一评测：
-
-```text
-EVAL_SOURCES=gfs,cma,hres
-EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
-```
-
-注意：source embedding 在单源 CMA 下基本退化为常数 bias，因此这里放在多源训练上更合理。
-
----
-
-### 9.8 `scaling`：模型参数量 / 容量实验
-
-运行命令：
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh scaling
-```
-
-包含实验：
-
-| EXP_NAME | Sources | Embed Dim | Channels | Depth | FuXi loss mode | Channel RMSE weight | 作用 |
-|---|---|---:|---|---|---|---:|---|
-| `A2Ec70_small_refnorm` | `cma` | 192 | `192,384,768` | `0,0,1` | `reference_norm` | `4e-3` | 小模型 |
-| `A2Ec70_base_refnorm` | `cma` | 256 | `256,512,1024` | `0,0,1` | `reference_norm` | `4e-3` | 中模型 |
-| `A2Ec70_cma_refnorm` | `cma` | 384 | `384,768,1536` | `0,0,1` | `reference_norm` | `4e-3` | 完整模型；复用 main 阶段 canonical CMA full |
-
-统一评测：
-
-```text
-EVAL_SOURCES=cma
-EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
-```
-
-这个阶段替代 CNN U-Net / ResUNet / SwinUNet 的大横向结构比较，更符合“同一模型不同参数量”的设计。
-
----
-
-### 9.9 `parameter`：超参数敏感性实验
-
-运行命令：
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh parameter
-```
-
-包含两组。
-
-#### 9.9.1 Gradient loss weight
-
-| EXP_NAME | Sources | Grad Loss Weight | FuXi loss mode | Channel RMSE weight |
-|---|---|---:|---|---:|
-| `A2Ec70_gradw_0p1` | `cma` | 0.1 | `reference_norm` | `4e-3` |
-| `A2Ec70_gradw_0p2` | `cma` | 0.2 | `reference_norm` | `4e-3` |
-| `A2Ec70_cma_refnorm` | `cma` | 0.4 | `reference_norm` | `4e-3` |
-| `A2Ec70_gradw_0p8` | `cma` | 0.8 | `reference_norm` | `4e-3` |
-
-#### 9.9.2 FuXi reference_norm loss weight
-
-| EXP_NAME | Sources | FuXi loss mode | Channel RMSE weight |
-|---|---|---|---:|
-| `A2Ec70_refnorm_w1em3` | `cma` | `reference_norm` | `1e-3` |
-| `A2Ec70_refnorm_w2em3` | `cma` | `reference_norm` | `2e-3` |
-| `A2Ec70_cma_refnorm` | `cma` | `reference_norm` | `4e-3` |
-| `A2Ec70_refnorm_w8em3` | `cma` | `reference_norm` | `8e-3` |
-
-这个阶段用于 supplementary 或 robustness，不建议最先跑。
-
----
-
-## 10. 推荐实际执行顺序
-
-### Step 0：smoke test
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh smoke
-```
-
-确认：
-
-```text
-训练能跑
-checkpoint 能保存
-config.json 能保存
-epoch_metrics.csv 能保存
-eval 能跑
-field_metrics_summary.csv 能保存
-```
-
----
-
-### Step 1：主实验
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh main
-```
-
-包括：
-
-```text
-A2Ec70_gfs_refnorm
-A2Ec70_cma_refnorm
-A2Ec70_hres_refnorm
-A2Ec70_gfs_cma_hres_refnorm
-```
-
----
-
-### Step 2：核心 loss 消融
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh loss_ablation
-```
-
-包括：
-
-```text
-A2Ec70_cma_refnorm      # Full baseline，复用 main 阶段
-A2Ec70_ab_wo_fuxi
-A2Ec70_ab_wo_grad
-A2Ec70_ab_l1_only
-```
-
----
-
-### Step 3：FuXi loss mode 消融
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh fuxi_loss
-```
-
-包括：
-
-```text
-A2Ec70_fuxi_rawmean_w5e4
-A2Ec70_cma_refnorm      # reference_norm 主方法，复用 main 阶段
-```
-
-两种模式对应：
-
-```text
-raw_mean
-reference_norm
-```
-
----
-
-### Step 4：embedding 消融
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh embedding
-```
-
-包括：
-
-```text
-A2Ec70_gfs_cma_hres_refnorm  # Full embedding baseline，复用 main 阶段
-A2Ec70_ms_wo_time_emb
-A2Ec70_ms_wo_source_emb
-```
-
-注意：source embedding 消融放在多源训练上更合理。
-
----
-
-### Step 5：model scaling
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh scaling
-```
-
-包括：
-
-```text
-A2Ec70_small_refnorm
-A2Ec70_base_refnorm
-A2Ec70_cma_refnorm      # Full baseline，复用 main 阶段
-```
-
----
-
-### Step 6：参数敏感性
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh parameter
-```
-
-包括：
-
-```text
-grad_loss_weight = 0.1, 0.2, 0.4, 0.8      # 0.4 复用 A2Ec70_cma_refnorm
-channel_rmse_weight = 1e-3, 2e-3, 4e-3, 8e-3 # 4e-3 复用 A2Ec70_cma_refnorm
-```
-
----
-
-## 10. FuXi loss 三种模式
-
-在 `fuxi_rmse_interface_new.py` 中支持：
-
-```text
-manual_weighted
-raw_mean
-reference_norm
-```
-
-### `manual_weighted`
-
-当前历史方法：
-
-```text
-sum(channel_weight[ch] * rmse_ch)
-```
-
-推荐搭配：
-
-```bash
-CHANNEL_RMSE_WEIGHT=1e-3
-```
-
-### `raw_mean`
-
-直接平均各通道 raw RMSE：
-
-```text
-mean(rmse_ch)
-```
-
-推荐搭配：
-
-```bash
-CHANNEL_RMSE_WEIGHT=5e-4
-```
-
-### `reference_norm`
-
-每个通道除以 FuXi-ERA5 reference RMSE 后平均：
-
-```text
-mean(rmse_ch / reference_rmse_ch)
-```
-
-推荐搭配：
-
-```bash
-CHANNEL_RMSE_WEIGHT=4e-3
-```
-
----
-
-## 11. 当前推荐主方法配置
-
-```bash
-SOURCES=cma
-EPOCHS=90
-FUXI_LOSS_MODE=reference_norm
-CHANNEL_RMSE_WEIGHT=4e-3
-USE_GRAD_LOSS=true
-GRAD_LOSS_WEIGHT=0.4
-CHANNELS=384,768,1536
-EMBED_DIM=384
-DEPTH=0,0,1
-USING_TIME_EMBEDDING=true
-USING_SOURCE_EMBEDDING=true
-```
-
-对应命令：
-
-```bash
-RUN=1 bash A2E/scripts/run_one.sh A2Ec70_cma_refnorm \
-  SOURCES=cma \
-  EPOCHS=90 \
-  FUXI_LOSS_MODE=reference_norm \
-  CHANNEL_RMSE_WEIGHT=4e-3
-```
-
-评测：
-
-```bash
-RUN=1 bash A2E/scripts/eval_one.sh A2Ec70_cma_refnorm \
-  EVAL_SOURCES=cma \
-  EVAL_DATES=20250101,20250105 \
-  EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
-```
-
----
-
-## 12. 常见问题
-
-### Q1：结果是不是会按实验名保存？
-
-是。
-
-实验名 `EXP_NAME` 是所有输出的索引。
-
-例如：
-
-```text
-A2Ec70_cma_refnorm
-```
-
-会对应：
-
-```text
-OUTPUT_ROOT/A2Ec70_cma_refnorm/
-CHECKPOINT_ROOT/A2Ec70_cma_refnorm/
-TENSORBOARD_ROOT/A2Ec70_cma_refnorm/
-PLOT_ROOT/A2Ec70_cma_refnorm/
-```
-
----
-
-### Q2：会不会还有 TensorBoard？
-
-会。
-
-原 trainer 的 TensorBoard 写入仍然保留。
-
-新增的 CSV/JSON 只是为了方便论文表格和批量汇总，不替代 TensorBoard。
-
----
-
-### Q3：`run_recommended_experiments.sh` 会自动评测吗？
-
-会。
-
-每个 phase 内部训练后会调用 `eval_one.sh`。
-
-但默认是 dry-run。必须加：
-
-```bash
-RUN=1
-```
-
-才会真正执行。
-
----
-
-### Q4：`all` 会跑双源实验吗？
-
-默认不会。
-
-`all` 包括：
-
-```text
-smoke
-main
-loss_ablation
-fuxi_loss
-embedding
-scaling
-parameter
-```
-
-双源实验要单独跑：
-
-```bash
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh dual_source
-```
-
----
-
-### Q5：Raw GFS/CMA/HRES baseline 在哪里？
-
-Checklist 中写 Raw baseline 已完成。
-
-当前脚本主要负责 A2E 训练和 A2E checkpoint 评测。Raw source-vs-ERA5 baseline 最好后续再写一个独立 raw-eval 脚本，输出同样格式：
-
-```text
-z500,t2m,tp,ws10m,msl,r700
-```
-
-这样可以和 A2E 结果放进同一张表。
-
----
-
-## 13. 建议最终目录结构
-
-一个完整实验最终大概是：
-
-```text
-OUTPUT_ROOT/A2Ec70_cma_refnorm/
+${OUTPUT_ROOT}/A2Ec70_gfs_refnorm/
 ├── train.log
-├── metrics/
-│   ├── launch_config.env
-│   ├── config.json
-│   └── epoch_metrics.csv
-└── eval/
-    ├── eval.log
-    ├── field_metrics_detail.csv
-    └── field_metrics_summary.csv
+└── metrics/
+    ├── launch_config.env
+    ├── config.json
+    └── epoch_metrics.csv
+```
 
-CHECKPOINT_ROOT/A2Ec70_cma_refnorm/
+说明：
+
+| 文件 | 内容 |
+|---|---|
+| `train.log` | 完整训练终端日志 |
+| `metrics/launch_config.env` | shell 层启动配置，如 sources、epochs、depth、loss 权重等 |
+| `metrics/config.json` | Python 实际训练配置，评估时用来重建模型 |
+| `metrics/epoch_metrics.csv` | 每个 epoch 的 train/val loss、lr、耗时等 |
+
+### 7.2 Checkpoint
+
+```text
+${CHECKPOINT_ROOT}/A2Ec70_gfs_refnorm/
 └── best.pth
+```
 
-TENSORBOARD_ROOT/A2Ec70_cma_refnorm/
-└── events.out.tfevents...
+评估默认使用：
 
-PLOT_ROOT/A2Ec70_cma_refnorm/
-└── ...
+```text
+${CHECKPOINT_ROOT}/EXP_NAME/best.pth
+```
+
+### 7.3 TensorBoard
+
+```text
+${TENSORBOARD_ROOT}/A2Ec70_gfs_refnorm/
+```
+
+### 7.4 可视化图片
+
+```text
+${PLOT_ROOT}/A2Ec70_gfs_refnorm/
+```
+
+### 7.5 评估输出
+
+```text
+${OUTPUT_ROOT}/A2Ec70_gfs_refnorm/eval/
+├── eval.log
+├── fuxi_rollout_metrics_detail.csv
+├── fuxi_rollout_metrics_summary.csv
+├── a2e_initial_metrics.csv
+└── a2e_initial_metrics_summary.csv
+```
+
+| 文件 | 内容 |
+|---|---|
+| `eval.log` | 完整评估日志 |
+| `fuxi_rollout_metrics_detail.csv` | 每天、每 source、每变量、每 lead step 的 RMSE/ACC |
+| `fuxi_rollout_metrics_summary.csv` | 每 source、每变量、每 lead step 的平均 RMSE/ACC |
+| `a2e_initial_metrics.csv` | A2E 初始场 vs ERA5 truth 的 L1/GradLoss/PSNR/SSIM 明细 |
+| `a2e_initial_metrics_summary.csv` | 每 source、每变量的平均 PSNR/SSIM/L1/GradLoss |
+
+### 7.6 scale 阶段额外 profile 输出
+
+仅 `5 / scale` 阶段会生成：
+
+```text
+${OUTPUT_ROOT}/A2Ec70_gfs_refnorm/profile/
+├── model_profile.json
+└── model_profile.csv
+```
+
+内容包括：
+
+```text
+params
+params_m
+FLOPs / GFLOPs
+MACs / GMACs
+A2E forward latency mean/p50/p90
+peak_cuda_memory_mb
 ```
 
 ---
 
-## 14. 最推荐的第一组命令
+## 8. 当前数据划分
+
+当前默认：
+
+```text
+Train:
+2022-01-01 00:00:00 到 2024-06-30 18:00:00
+
+Validation:
+2024-07-01 00:00:00 到 2024-12-31 18:00:00
+
+Test / Eval init dates:
+2025-01-01 到 2025-11-22，每天一个 init date
+```
+
+验证集抽样：
 
 ```bash
-# 1. 先检查所有命令，不执行
-bash A2E/scripts/run_recommended_experiments.sh smoke
+VAL_SAMPLE_PER_MONTH=7
+VAL_SAMPLE_YEAR=2024
+```
 
-# 2. 真正跑 smoke test
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh smoke
+即约：
 
-# 3. smoke 成功后，跑主实验
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh main
+```text
+6 months * 7 days/month * 4 times/day = 168 samples/source
+```
 
-# 4. 主实验稳定后，跑核心消融
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh loss_ablation
+HRES 默认只有 2024-2025，所以 HRES 划分为：
 
-# 5. 跑 FuXi loss mode 消融
-RUN=1 bash A2E/scripts/run_recommended_experiments.sh fuxi_loss
+```text
+HRES train: 2024-01-01 到 2024-06-30
+HRES val:   2024-07-01 到 2024-12-31
+HRES test:  2025-01-01 到 2025-11-22
+```
+
+---
+
+## 9. 评估指标
+
+### 9.1 FuXi rollout 指标
+
+评估脚本：
+
+```text
+A2E/eval/eval_fuxi_rollout.py
+```
+
+流程：
+
+```text
+source(t0) -> A2E -> ERA5-like initial field
+[ERA5(t0-6h), A2E(t0)] -> FuXi rollout
+FuXi output(t0+6h ... t0+240h) vs ERA5 truth
+```
+
+输出：
+
+```text
+RMSE
+ACC
+```
+
+按以下粒度汇总：
+
+```text
+experiment / source / variable / lead_step / lead_hours
+```
+
+### 9.2 A2E 初始场图像指标
+
+A2E 直接输出与 ERA5 truth 比较，不经过 FuXi：
+
+```text
+A2E(source at t0) vs ERA5(t0)
+```
+
+输出：
+
+```text
+L1 loss
+GradLoss
+PSNR
+SSIM
+```
+
+按以下粒度汇总：
+
+```text
+experiment / source / variable
+```
+
+### 9.3 默认评估变量
+
+```text
+z500,t2m,t850,ws10,ws850,msl
+```
+
+其中：
+
+```text
+ws10  = sqrt(u10m^2 + v10m^2)
+ws850 = sqrt(u850^2 + v850^2)
+```
+
+---
+
+## 10. tp 通道处理
+
+当前 dataloader 会把 `tp` 通道置 0：
+
+```text
+x_tp = 0
+y_tp = 0
+```
+
+原因：FuXi 初始场推理时 `tp` 会置 0，所以 A2E 不再学习 `tp` 初始场转换。张量仍然保持 70 通道，只是 `tp` 不贡献有效训练目标。
+
+---
+
+## 11. 常见问题
+
+### Q1：评估是否使用 best checkpoint？
+
+是。默认使用：
+
+```text
+CHECKPOINT_ROOT/EXP_NAME/best.pth
+```
+
+并使用：
+
+```text
+OUTPUT_ROOT/EXP_NAME/metrics/config.json
+```
+
+重建模型结构。
+
+### Q2：端口占用怎么办？
+
+如果看到：
+
+```text
+EADDRINUSE: address already in use, port 29500
+```
+
+换一个端口：
+
+```bash
+MASTER_PORT=29517 RUN=1 bash A2E/scripts/run_interface.sh 1
+```
+
+### Q3：`all` 包含 dual_source 吗？
+
+不包含。`dual_source` 要单独跑：
+
+```bash
+RUN=1 bash A2E/scripts/run_interface.sh 7
+```
+
+### Q4：只想预览命令怎么办？
+
+不加 `RUN=1` 即可：
+
+```bash
+bash A2E/scripts/run_interface.sh 1
+```
+
+### Q5：scale 的 FLOPs 准确吗？
+
+FLOPs 通过 PyTorch profiler 估算：
+
+```text
+torch.profiler.profile(with_flops=True)
+```
+
+部分算子可能无法统计 FLOPs，因此 `model_profile.json` 中会保存说明。论文中可以写：
+
+```text
+FLOPs are estimated using PyTorch profiler for a single A2E forward pass.
+```
+
+---
+
+## 12. 核心脚本列表
+
+```text
+A2E/configs/common.sh                    # 默认路径、数据划分、训练/评估/profile 配置
+A2E/scripts/run_interface.sh             # 编号式一键入口
+A2E/scripts/run_recommended_experiments.sh # 分组实验组织逻辑
+A2E/scripts/run_one.sh                   # 单个训练实验
+A2E/scripts/eval_one.sh                  # 单个实验评估
+A2E/main_res_exp.py                      # 参数化训练入口
+A2E/data/pairset.py                      # 训练/验证数据集；tp 通道置 0
+A2E/eval/eval_fuxi_rollout.py            # FuXi rollout 评估 + A2E 初始场图像指标
+A2E/eval/profile_a2e.py                  # scale 阶段模型 profile
+A2E/fuxi_rmse_interface_new.py           # FuXi downstream loss 接口
 ```

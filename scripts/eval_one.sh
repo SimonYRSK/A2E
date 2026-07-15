@@ -18,8 +18,14 @@ Common KEY=VALUE overrides:
   CKPT=/path/to/checkpoint.pth       default: CHECKPOINT_ROOT/EXP_NAME/best.pth
   CONFIG=/path/to/config.json        default: OUTPUT_ROOT/EXP_NAME/metrics/config.json
   EVAL_SOURCES=cma|gfs,cma,hres      default: SOURCES from common config
-  EVAL_DATES=20250101,20250102       default: 20250101
-  EVAL_VARIABLES=z500,t2m,tp,ws10m,msl,r700
+  EVAL_DATES=20250101,20250102       default: 20250101:20251122; START:END means daily init dates
+  EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+  EVAL_FORECAST_STEPS=40             FuXi rollout steps, 6h per step
+
+Outputs:
+  fuxi_rollout_metrics_detail.csv    FuXi(A2E) rollout RMSE/ACC by lead/variable
+  fuxi_rollout_metrics_summary.csv   mean FuXi(A2E) rollout RMSE/ACC
+  a2e_initial_metrics.csv            A2E-vs-ERA5 L1/GradLoss plus PSNR/SSIM
 USAGE
 }
 
@@ -47,12 +53,12 @@ EVAL_SOURCES=${EVAL_SOURCES:-${SOURCES}}
 mkdir -p "${EVAL_OUTPUT_DIR}"
 LOG_PATH="${EVAL_OUTPUT_DIR}/eval.log"
 
-echo "[eval_one] exp=${EXP_NAME} ckpt=${CKPT} sources=${EVAL_SOURCES} dates=${EVAL_DATES} variables=${EVAL_VARIABLES}"
-echo "[eval_one] output=${EVAL_OUTPUT_DIR}"
+echo "[eval_one] exp=${EXP_NAME} ckpt=${CKPT} sources=${EVAL_SOURCES} dates=${EVAL_DATES} variables=${EVAL_VARIABLES} forecast_steps=${EVAL_FORECAST_STEPS}"
+echo "[eval_one] FuXi rollout output=${EVAL_OUTPUT_DIR}"
 
 cd "${A2E_ROOT}"
 
-"${PYTHON_BIN}" eval/eval_a2e_fields.py \
+"${PYTHON_BIN}" eval/eval_fuxi_rollout.py \
   --exp_name "${EXP_NAME}" \
   --config "${CONFIG}" \
   --ckpt "${CKPT}" \
@@ -60,9 +66,11 @@ cd "${A2E_ROOT}"
   --sources "${EVAL_SOURCES}" \
   --dates "${EVAL_DATES}" \
   --variables "${EVAL_VARIABLES}" \
+  --forecast_steps "${EVAL_FORECAST_STEPS}" \
   --era5_path "${ERA5_PATH}" \
   --gfs_path "${GFS_PATH}" \
   --hres_path "${HRES_PATH}" \
   --cma_path "${CMA_PATH}" \
+  --fuxi_dir "${FUXI_DIR}" \
   --clim_path "${CLIM_PATH}" \
   2>&1 | tee "${LOG_PATH}"

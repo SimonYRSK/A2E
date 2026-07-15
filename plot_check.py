@@ -28,8 +28,16 @@ DEFAULT_HRES_PATH = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/
 DEFAULT_CMA_PATH = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data/cma_gfs_2020_2026.c226.norm.zarr"
 DEFAULT_ERA5_PATH = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/fanjiang/dataset/era5.2010_2025.c226.zarr"
 
-CHANNELS = ["z500", "t500", "u500", "v500", "r500", "t2m", "msl", 'u10m', 'v10m']
-SOURCES = ["era5", "gfs"]
+CHANNELS =['z50', 'z100', 'z150', 'z200', 'z250', 'z300', 'z400', 'z500',
+               'z600', 'z700', 'z850', 'z925', 'z1000', 't50', 't100', 't150',
+               't200', 't250', 't300', 't400', 't500', 't600', 't700', 't850',
+               't925', 't1000', 'u50', 'u100', 'u150', 'u200', 'u250', 'u300',
+               'u400', 'u500', 'u600', 'u700', 'u850', 'u925', 'u1000', 'v50',
+               'v100', 'v150', 'v200', 'v250', 'v300', 'v400', 'v500', 'v600',
+               'v700', 'v850', 'v925', 'v1000', 'r50', 'r100', 'r150', 'r200',
+               'r250', 'r300', 'r400', 'r500', 'r600', 'r700', 'r850', 'r925',
+               'r1000', 't2m', 'u10m', 'v10m', 'msl', 'tp']
+SOURCES = ["era5", "cma"]
 
 
 def open_zarr_safe(path: str) -> xr.Dataset:

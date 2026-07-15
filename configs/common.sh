@@ -17,8 +17,8 @@ export PROJECT_ROOT=${PROJECT_ROOT:-/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/p
 export DATA_ROOT=${DATA_ROOT:-/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/data}
 
 export ERA5_PATH=${ERA5_PATH:-${DATA_ROOT}/era5.2020_2025_norm.zarr}
-export GFS_PATH=${GFS_PATH:-${DATA_ROOT}/gfs_2020_2025_c226_0p25_norm.zarr}
-export HRES_PATH=${HRES_PATH:-${DATA_ROOT}/hres_2024_2025_c226_0p25_norm.zarr}
+export GFS_PATH=${GFS_PATH:-${DATA_ROOT}/gfs.2022_2025_0p25.norm.zarr}
+export HRES_PATH=${HRES_PATH:-${DATA_ROOT}/hres_0p25_2022_2025_c70.zarr}
 export CMA_PATH=${CMA_PATH:-${DATA_ROOT}/cma_gfs_2020_2026.c226.norm.zarr}
 export FUXI_DIR=${FUXI_DIR:-/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/fuxi_inference/main/fuxi}
 export CLIM_PATH=${CLIM_PATH:-/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/fanjiang/eval/era5/clim.daily}
@@ -34,15 +34,19 @@ export INFERENCE_ROOT=${INFERENCE_ROOT:-${PROJECT_ROOT}/inference_results}
 # -------------------------
 export SOURCES=${SOURCES:-gfs}
 export TRAIN_START=${TRAIN_START:-2022-01-01 00:00:00}
-export TRAIN_END=${TRAIN_END:-2024-12-31 18:00:00}
-export VAL_START=${VAL_START:-2025-01-01 00:00:00}
-export VAL_END=${VAL_END:-2025-11-20 18:00:00}
-export VAL_SAMPLE_PER_MONTH=${VAL_SAMPLE_PER_MONTH:-4}
-export VAL_SAMPLE_YEAR=${VAL_SAMPLE_YEAR:-2025}
+export TRAIN_END=${TRAIN_END:-2024-06-30 18:00:00}
+export VAL_START=${VAL_START:-2024-07-01 00:00:00}
+export VAL_END=${VAL_END:-2024-12-31 18:00:00}
+# Current setting keeps validation size close to the old setup:
+# old: 2025 Jan-Nov, 4 days/month ~= 176 samples/source;
+# new: 2024 Jul-Dec, 7 days/month ~= 168 samples/source.
+export VAL_SAMPLE_PER_MONTH=${VAL_SAMPLE_PER_MONTH:-7}
+export VAL_SAMPLE_YEAR=${VAL_SAMPLE_YEAR:-2024}
 export MAX_SAMPLES_PER_YEAR=${MAX_SAMPLES_PER_YEAR:-none}
+export TRAIN_SAMPLE_RATIO=${TRAIN_SAMPLE_RATIO:-1.0}
 export SAMPLE_SEED=${SAMPLE_SEED:-43}
 
-# HRES has only 2024-2025 in current data layout.
+# Source-specific ranges default to the unified split above.
 export GFS_TRAIN_START=${GFS_TRAIN_START:-${TRAIN_START}}
 export GFS_TRAIN_END=${GFS_TRAIN_END:-${TRAIN_END}}
 export GFS_VAL_START=${GFS_VAL_START:-${VAL_START}}
@@ -51,13 +55,13 @@ export CMA_TRAIN_START=${CMA_TRAIN_START:-${TRAIN_START}}
 export CMA_TRAIN_END=${CMA_TRAIN_END:-${TRAIN_END}}
 export CMA_VAL_START=${CMA_VAL_START:-${VAL_START}}
 export CMA_VAL_END=${CMA_VAL_END:-${VAL_END}}
-export HRES_TRAIN_START=${HRES_TRAIN_START:-2024-01-01 00:00:00}
-export HRES_TRAIN_END=${HRES_TRAIN_END:-2024-12-31 18:00:00}
+export HRES_TRAIN_START=${HRES_TRAIN_START:-${TRAIN_START}}
+export HRES_TRAIN_END=${HRES_TRAIN_END:-${TRAIN_END}}
 export HRES_VAL_START=${HRES_VAL_START:-${VAL_START}}
 export HRES_VAL_END=${HRES_VAL_END:-${VAL_END}}
 
-# Paper/evaluation variables. Q700 was corrected to r700.
-export EVAL_VARIABLES=${EVAL_VARIABLES:-z500,t2m,tp,ws10m,msl,r700}
+# Paper/evaluation variables for FuXi rollout metrics.
+export EVAL_VARIABLES=${EVAL_VARIABLES:-z500,t2m,t850,ws10,ws850,msl}
 
 # -------------------------
 # Model config
@@ -126,6 +130,17 @@ export FUXI_LEAD_HOURS=${FUXI_LEAD_HOURS:-6}
 # -------------------------
 # Evaluation config
 # -------------------------
-export EVAL_DATES=${EVAL_DATES:-20250101}
+# Daily test initializations. With 40 x 6h rollout, eval_fuxi_rollout.py skips
+# leads whose ERA5 truth is unavailable near the data end.
+export EVAL_DATES=${EVAL_DATES:-20250101:20251122}
 export EVAL_SOURCES=${EVAL_SOURCES:-${SOURCES}}
 export EVAL_FORECAST_STEPS=${EVAL_FORECAST_STEPS:-40}
+
+# -------------------------
+# Model profiling config (used by phase 5 / scaling only)
+# -------------------------
+export PROFILE_DEVICE=${PROFILE_DEVICE:-cuda}
+export PROFILE_BATCH_SIZE=${PROFILE_BATCH_SIZE:-1}
+export PROFILE_WARMUP=${PROFILE_WARMUP:-3}
+export PROFILE_ITERS=${PROFILE_ITERS:-10}
+export PROFILE_COMPUTE_FLOPS=${PROFILE_COMPUTE_FLOPS:-true}
