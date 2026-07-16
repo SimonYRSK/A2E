@@ -119,8 +119,12 @@ set -euo pipefail
 #     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
 #
 # 5 / depth
-#   # The depth phase also runs profile_a2e.py for both experiments.
+#   # The depth phase also runs profile_a2e.py for all three experiments.
 #   bash A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
+#     EVAL_SOURCES=gfs \
+#     EVAL_DATES=${EVAL_DATES} \
+#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E/scripts/eval_one.sh A2Ec70_mid_refnorm \
 #     EVAL_SOURCES=gfs \
 #     EVAL_DATES=${EVAL_DATES} \
 #     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl

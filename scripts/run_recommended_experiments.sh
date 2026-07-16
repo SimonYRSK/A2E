@@ -284,21 +284,32 @@ phase_source_mix() {
 
 # -----------------------------------------------------------------------------
 # Phase 5: Depth scaling
-# Purpose: A2E-Lite vs A2E-Deep. A2E-Lite is reused from main.
+# Purpose: A2E-Lite vs A2E-Mid vs A2E-Deep. A2E-Lite is reused from main.
 # -----------------------------------------------------------------------------
 phase_depth_scaling() {
+  run_train "A2Ec70_mid_refnorm" \
+    "SOURCES=gfs" \
+    "EPOCHS=90" \
+    "EMBED_DIM=384" \
+    "CHANNELS=384,768,1536" \
+    "DEPTH=0,0,2" \
+    "RES_PER_STAGE=2,2,2" \
+    "FUXI_LOSS_MODE=reference_norm" \
+    "CHANNEL_RMSE_WEIGHT=8e-3"
+
   run_train "A2Ec70_deep_refnorm" \
     "SOURCES=gfs" \
     "EPOCHS=90" \
     "EMBED_DIM=384" \
     "CHANNELS=384,768,1536" \
     "DEPTH=0,1,2" \
-    "RES_PER_STAGE=1,1,2" \
+    "RES_PER_STAGE=3,3,3" \
     "FUXI_LOSS_MODE=reference_norm" \
     "CHANNEL_RMSE_WEIGHT=8e-3"
 
   for exp in \
     A2Ec70_gfs_refnorm \
+    A2Ec70_mid_refnorm \
     A2Ec70_deep_refnorm
   do
     run_profile "${exp}"

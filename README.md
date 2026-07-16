@@ -109,7 +109,7 @@ A2E forward latency
 | `2` | `loss` / `loss_ablation` | L1 / Grad / FuXi loss 消融 | 是，复用 full baseline | 是 |
 | `3` | `fuxi` / `fuxi_loss` | FuXi loss 形式消融 | 是，复用 reference baseline | 是 |
 | `4` | `emb` / `embedding` | Time / Source embedding 消融 | 是，复用 multi-source full | 是 |
-| `5` | `scale` / `scaling` / `depth` | 宽度规模 + 深度 scaling | 是，复用 A2E-Lite | 是，并 profile |
+| `5` | `scale` / `scaling` / `depth` | 深度 scaling：Lite / Mid / Deep | 是，复用 A2E-c70-Lite | 是，并 profile |
 | `6` | `param` / `parameter` | 超参数敏感性 | 是 | 是 |
 | `7` | `dual` / `dual_source` | 双源组合，可选 | 是 | 是 |
 | `8` | `paper_min` | smoke + main + loss + fuxi + scale | 是 | 是 |

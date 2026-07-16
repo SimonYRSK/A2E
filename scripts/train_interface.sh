@@ -56,8 +56,9 @@ set -euo pipefail
 #
 # 5 / depth
 #   Depth scaling only:
-#   - A2Ec70_gfs_refnorm              [A2E-Lite, reused from main]
-#   - A2Ec70_deep_refnorm             [A2E-Deep]
+#   - A2Ec70_gfs_refnorm              [A2E-c70-Lite, reused from main; channels=384,768,1536, depth=0,0,1, res=1,1,1]
+#   - A2Ec70_mid_refnorm              [A2E-c70-Mid; channels=384,768,1536, depth=0,0,2, res=2,2,2]
+#   - A2Ec70_deep_refnorm             [A2E-c70-Deep; channels=384,768,1536, depth=0,1,2, res=3,3,3]
 #
 # 6 / parameter
 #   Gradient loss weight and FuXi RMSE loss weight sensitivity, default source = GFS:
