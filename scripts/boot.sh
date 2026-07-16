@@ -22,3 +22,5 @@ RUN=1 bash A2E/scripts/train_interface.sh 6
 
 
 torchrun --nproc_per_node=4 /home/ximutian/A2E/occ.py
+
+# tensorboard --logdir /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/MutianXi/A2E/Formal/tensorboard_logs
