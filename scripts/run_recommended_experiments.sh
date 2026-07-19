@@ -83,7 +83,7 @@ phase_smoke() {
     "SOURCES=gfs" \
     "EPOCHS=1" \
     "VAL_SAMPLE_PER_MONTH=1" \
-    "RMSE_EVERY_N_STEPS=1" \
+    "RMSE_EVERY_N_STEPS=10" \
     "FUXI_LOSS_MODE=reference_norm" \
     "CHANNEL_RMSE_WEIGHT=8e-3"
 

@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
-RUN=1 bash A2E/scripts/train_interface.sh r
+#RUN=1 bash A2E/scripts/train_interface.sh r
 
-# MASTER_PORT=29517 RUN=1 bash A2E/scripts/train_interface.sh 0
+MASTER_PORT=29517 RUN=1 bash A2E/scripts/train_interface.sh 0
 
 
 
-MASTER_PORT=29518 RUN=1 bash /home/ximutian/A2E/scripts/run_one.sh A2Ec70_gfs_refnorm \
-  SOURCES=gfs \
-  EPOCHS=90 \
-  FUXI_LOSS_MODE=reference_norm \
-  CHANNEL_RMSE_WEIGHT=8e-3
+
 
 
 # RUN=1 bash /home/ximutian/A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \

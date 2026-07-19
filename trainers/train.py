@@ -150,16 +150,17 @@ class BaseTrainer:
         improve = current_avg_loss < self.best_loss
         if improve:
             self.best_loss = current_avg_loss
-            file_path = os.path.join(self.save_dir, f"checkpoint_epoch_{epoch + 1 + self.start_epoch}.pth")
+            file_path = os.path.join(self.save_dir, "best.pth")
             state = {
                 'epoch': epoch + 1 + self.start_epoch,
+                'best_loss': float(current_avg_loss),
                 'model_state_dict': self.model.state_dict(),
                 'optimizer_state_dict': self.opt.state_dict(),
                 'scheduler_state_dict': self.sch.state_dict() if self.sch else None,
                 'scaler_state_dict': self.scaler.state_dict() if self.use_amp else None,
             }
             torch.save(state, file_path)
-            print(f"Checkpoint saved to {file_path}")
+            print(f"Best checkpoint saved to {file_path}")
 
             self.writer.add_scalar("best/val_loss", current_avg_loss,  epoch + self.start_epoch)
 
