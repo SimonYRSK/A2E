@@ -1,20 +1,18 @@
 #!/usr/bin/env bash
-#RUN=1 bash A2E/scripts/train_interface.sh r
-
-MASTER_PORT=29517 RUN=1 bash A2E/scripts/train_interface.sh 0
-
+bash A2E/scripts/run_one.sh A2Ec70_gfs_refnorm \
+  SOURCES=gfs EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=8e-3
 
 
 
 
+bash A2E/scripts/run_one.sh A2Ec70_refnorm_w4em3 \
+  SOURCES=gfs EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=4e-3
 
-# RUN=1 bash /home/ximutian/A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
-#   EVAL_SOURCES=gfs \
-#   EVAL_DATES=${EVAL_DATES} \
-#   EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+bash A2E/scripts/run_one.sh A2Ec70_refnorm_w1em2 \
+  SOURCES=gfs EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=1e-2
 
-
-RUN=1 bash A2E/scripts/train_interface.sh 6
+bash A2E/scripts/run_one.sh A2Ec70_refnorm_w2em3 \
+  SOURCES=gfs EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=2e-3
 
 
 torchrun --nproc_per_node=4 /home/ximutian/A2E/occ.py

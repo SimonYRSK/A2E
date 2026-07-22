@@ -112,8 +112,6 @@ export GRAD_CLIP_NORM=${GRAD_CLIP_NORM:-5.0}
 # -------------------------
 export RECON_LOSS_TYPE=${RECON_LOSS_TYPE:-l1}
 export CHARBONNIER_EPS=${CHARBONNIER_EPS:-1e-3}
-export USE_GRAD_LOSS=${USE_GRAD_LOSS:-true}
-export GRAD_LOSS_WEIGHT=${GRAD_LOSS_WEIGHT:-0.4}
 export BETA=${BETA:-1e-4}
 export KL_ANNEAL=${KL_ANNEAL:-false}
 export KL_ANNEAL_EPOCHS=${KL_ANNEAL_EPOCHS:-7}

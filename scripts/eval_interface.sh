@@ -2,17 +2,17 @@
 set -euo pipefail
 
 # =============================================================================
-# A2E eval-only experiment entry: evaluate experiment groups by number/name.
+# A2E_backup eval-only experiment entry: no-GradLoss branch.
 # =============================================================================
 #
 # List phases:
-#   bash A2E/scripts/eval_interface.sh list
+#   bash A2E_backup/scripts/eval_interface.sh list
 #
 # Preview eval commands only:
-#   bash A2E/scripts/eval_interface.sh 1
+#   bash A2E_backup/scripts/eval_interface.sh 1
 #
 # Execute eval commands only:
-#   RUN=1 bash A2E/scripts/eval_interface.sh 1
+#   RUN=1 bash A2E_backup/scripts/eval_interface.sh 1
 #
 # This assumes checkpoints already exist under CHECKPOINT_ROOT/EXP_NAME/best.pth.
 #
@@ -21,147 +21,44 @@ set -euo pipefail
 # =============================================================================
 #
 # 0 / smoke
-#   bash A2E/scripts/eval_one.sh smoke_gfs_refnorm \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=20250101 \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh smoke_gfs_refnorm \
+#     EVAL_SOURCES=gfs EVAL_DATES=20250101 EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
 #
 # 1 / main
-#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
-#     EVAL_SOURCES=gfs,cma,hres \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_cma_refnorm \
-#     EVAL_SOURCES=gfs,cma,hres \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_hres_refnorm \
-#     EVAL_SOURCES=gfs,cma,hres \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_cma_hres_refnorm \
-#     EVAL_SOURCES=gfs,cma,hres \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_gfs_refnorm EVAL_SOURCES=gfs,cma,hres EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_cma_refnorm EVAL_SOURCES=gfs,cma,hres EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_hres_refnorm EVAL_SOURCES=gfs,cma,hres EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_gfs_cma_hres_refnorm EVAL_SOURCES=gfs,cma,hres EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
 #
 # 2 / loss_ablation
-#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_ab_wo_fuxi \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_ab_wo_grad \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_ab_l1_only \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_ab_wo_source_emb \
-#     EVAL_SOURCES=gfs,cma,hres \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_gfs_refnorm EVAL_SOURCES=gfs EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_ab_wo_fuxi EVAL_SOURCES=gfs EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_ab_wo_source_emb EVAL_SOURCES=gfs,cma,hres EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
 #
 # 3 / data_scale
-#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_data20_refnorm \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_data40_refnorm \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_data60_refnorm \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_data80_refnorm \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_gfs_data25_refnorm EVAL_SOURCES=gfs EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_gfs_data50_refnorm EVAL_SOURCES=gfs EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_gfs_refnorm EVAL_SOURCES=gfs EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
 #
-# 4 / source_mix / dual
-#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
-#     EVAL_SOURCES=gfs,cma,hres \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_cma_refnorm \
-#     EVAL_SOURCES=gfs,cma,hres \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_hres_refnorm \
-#     EVAL_SOURCES=gfs,cma,hres \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_cma_refnorm \
-#     EVAL_SOURCES=gfs,cma,hres \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_hres_refnorm \
-#     EVAL_SOURCES=gfs,cma,hres \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_cma_hres_refnorm \
-#     EVAL_SOURCES=gfs,cma,hres \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_cma_hres_refnorm \
-#     EVAL_SOURCES=gfs,cma,hres \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+# 4 / source_mix
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_gfs_refnorm EVAL_SOURCES=gfs,cma,hres EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_cma_refnorm EVAL_SOURCES=gfs,cma,hres EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_hres_refnorm EVAL_SOURCES=gfs,cma,hres EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_gfs_cma_refnorm EVAL_SOURCES=gfs,cma,hres EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_gfs_hres_refnorm EVAL_SOURCES=gfs,cma,hres EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_cma_hres_refnorm EVAL_SOURCES=gfs,cma,hres EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_gfs_cma_hres_refnorm EVAL_SOURCES=gfs,cma,hres EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
 #
 # 5 / depth
-#   # The depth phase also runs profile_a2e.py for all three experiments.
-#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_mid_refnorm \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_deep_refnorm \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_gfs_refnorm EVAL_SOURCES=gfs EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_mid_refnorm EVAL_SOURCES=gfs EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_deep_refnorm EVAL_SOURCES=gfs EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
 #
 # 6 / parameter
-#   bash A2E/scripts/eval_one.sh A2Ec70_gradw_0p1 \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_gradw_0p2 \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_gfs_refnorm \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_gradw_0p8 \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_refnorm_w1em3 \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_refnorm_w2em3 \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
-#   bash A2E/scripts/eval_one.sh A2Ec70_refnorm_w4em3 \
-#     EVAL_SOURCES=gfs \
-#     EVAL_DATES=${EVAL_DATES} \
-#     EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_refnorm_w2em3 EVAL_SOURCES=gfs EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_refnorm_w4em3 EVAL_SOURCES=gfs EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_gfs_refnorm EVAL_SOURCES=gfs EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
+#   bash A2E_backup/scripts/eval_one.sh A2Ec70_refnorm_w1em2 EVAL_SOURCES=gfs EVAL_DATES=${EVAL_DATES} EVAL_VARIABLES=z500,t2m,t850,ws10,ws850,msl
 #
 # =============================================================================
 
@@ -195,7 +92,7 @@ run_phase() {
   phase=$(phase_name "$key")
   if [[ -z "$phase" ]]; then
     echo "未知实验编号/名称: $key" >&2
-    echo "运行 bash A2E/scripts/eval_interface.sh list 查看可用编号" >&2
+    echo "运行 bash A2E_backup/scripts/eval_interface.sh list 查看可用编号" >&2
     exit 2
   fi
   echo
@@ -216,13 +113,14 @@ run_paper_min() {
 }
 
 run_paper_full() {
-  echo "将评估完整论文集合: 0(smoke) -> 1(main) -> 2(loss) -> 3(data_scale) -> 4(source_mix) -> 5(depth)"
+  echo "将评估完整论文集合: 0(smoke) -> 1(main) -> 2(loss) -> 3(data_scale) -> 4(source_mix) -> 5(depth) -> 6(parameter)"
   run_phase 0
   run_phase 1
   run_phase 2
   run_phase 3
   run_phase 4
   run_phase 5
+  run_phase 6
 }
 
 if [[ $# -eq 0 || "${1:-}" == "list" || "${1:-}" == "help" || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then

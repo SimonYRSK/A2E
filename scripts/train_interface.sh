@@ -2,21 +2,85 @@
 set -euo pipefail
 
 # =============================================================================
-# A2E train-only experiment entry: run experiment groups by number/name.
+#  train-only experiment entry: no-GradLoss branch.
 # =============================================================================
 #
+# This backup assumes the final objective is L1 + FuXi forecast-guided loss.
+# GradLoss arguments and experiments are intentionally removed.
+#
 # List phases:
-#   bash A2E/scripts/train_interface.sh list
+#   bash /scripts/train_interface.sh list
 #
 # Preview train commands only:
-#   bash A2E/scripts/train_interface.sh 1
+#   bash /scripts/train_interface.sh 1
 #
 # Execute train commands only:
-#   RUN=1 bash A2E/scripts/train_interface.sh 1
-#   RUN=1 bash A2E/scripts/train_interface.sh 1 2 3
+#   RUN=1 bash /scripts/train_interface.sh 1
+#   RUN=1 bash /scripts/train_interface.sh 1 2 3
 #
 # After training, run the matching evaluation phase separately:
-#   RUN=1 bash A2E/scripts/eval_interface.sh 1
+#   RUN=1 bash /scripts/eval_interface.sh 1
+#
+# =============================================================================
+# Single-experiment commands
+# =============================================================================
+#
+# If you only want to train one minimal sub-experiment, run run_one.sh directly.
+# NOTE: run_one.sh executes immediately; it does not use RUN=1 dry-run logic.
+#
+# Smoke:
+#   bash /scripts/run_one.sh smoke_gfs_refnorm \
+#     SOURCES=gfs EPOCHS=1 VAL_SAMPLE_PER_MONTH=1 RMSE_EVERY_N_STEPS=1 \
+#     FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=8e-3
+#
+# Main single-source / multi-source:
+#   bash /scripts/run_one.sh A2Ec70_gfs_refnorm \
+#     SOURCES=gfs EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=8e-3
+#   bash /scripts/run_one.sh A2Ec70_cma_refnorm \
+#     SOURCES=cma EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=8e-3
+#   bash /scripts/run_one.sh A2Ec70_hres_refnorm \
+#     SOURCES=hres EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=8e-3
+#   bash /scripts/run_one.sh A2Ec70_gfs_cma_hres_refnorm \
+#     SOURCES=gfs,cma,hres EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=8e-3
+#
+# Core ablation:
+#   bash /scripts/run_one.sh A2Ec70_ab_wo_fuxi \
+#     SOURCES=gfs EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=0
+#   bash /scripts/run_one.sh A2Ec70_ab_l1_only \
+#     SOURCES=gfs EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=0
+#   bash /scripts/run_one.sh A2Ec70_ab_wo_source_emb \
+#     SOURCES=gfs,cma,hres EPOCHS=90 USING_TIME_EMBEDDING=true USING_SOURCE_EMBEDDING=false \
+#     FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=8e-3
+#
+# Data-scale study:
+#   bash /scripts/run_one.sh A2Ec70_gfs_data25_refnorm \
+#     SOURCES=gfs EPOCHS=90 TRAIN_SAMPLE_RATIO=0.25 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=8e-3
+#   bash /scripts/run_one.sh A2Ec70_gfs_data50_refnorm \
+#     SOURCES=gfs EPOCHS=90 TRAIN_SAMPLE_RATIO=0.5 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=8e-3
+#
+# Source-mix study:
+#   bash /scripts/run_one.sh A2Ec70_gfs_cma_refnorm \
+#     SOURCES=gfs,cma EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=8e-3
+#   bash /scripts/run_one.sh A2Ec70_gfs_hres_refnorm \
+#     SOURCES=gfs,hres EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=8e-3
+#   bash /scripts/run_one.sh A2Ec70_cma_hres_refnorm \
+#     SOURCES=cma,hres EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=8e-3
+#
+# Depth scaling:
+#   bash /scripts/run_one.sh A2Ec70_mid_refnorm \
+#     SOURCES=gfs EPOCHS=90 EMBED_DIM=384 CHANNELS=384,768,1536 DEPTH=0,0,2 RES_PER_STAGE=2,2,2 \
+#     FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=8e-3
+#   bash /scripts/run_one.sh A2Ec70_deep_refnorm \
+#     SOURCES=gfs EPOCHS=90 EMBED_DIM=384 CHANNELS=384,768,1536 DEPTH=0,1,2 RES_PER_STAGE=3,3,3 \
+#     FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=8e-3
+#
+# FuXi reference_norm weight sensitivity:
+#   bash /scripts/run_one.sh A2Ec70_refnorm_w2em3 \
+#     SOURCES=gfs EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=2e-3
+#   bash /scripts/run_one.sh A2Ec70_refnorm_w4em3 \
+#     SOURCES=gfs EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=4e-3
+#   bash /scripts/run_one.sh A2Ec70_refnorm_w1em2 \
+#     SOURCES=gfs EPOCHS=90 FUXI_LOSS_MODE=reference_norm CHANNEL_RMSE_WEIGHT=1e-2
 #
 # =============================================================================
 # Phase table
@@ -32,22 +96,16 @@ set -euo pipefail
 #   - A2Ec70_gfs_cma_hres_refnorm     [GFS+CMA+HRES]
 #
 # 2 / loss
-#   - A2Ec70_gfs_refnorm              [Full, reused from main]
-#   - A2Ec70_ab_wo_fuxi               [L1 + Grad, no FuXi]
-#   - A2Ec70_ab_wo_grad               [L1 + FuXi, no Grad]
-#   - A2Ec70_ab_l1_only               [L1 only]
+#   - A2Ec70_gfs_refnorm              [Final: L1 + FuXi, reused from main]
+#   - A2Ec70_ab_wo_fuxi               [L1 only / no FuXi]
 #   - A2Ec70_ab_wo_source_emb         [multi-source, no source embedding]
 #
 # 3 / data_scale
-#   GFS-only random data-scale study from the training period:
-#   - A2Ec70_gfs_data20_refnorm       [TRAIN_SAMPLE_RATIO=0.2]
-#   - A2Ec70_gfs_data40_refnorm       [TRAIN_SAMPLE_RATIO=0.4]
-#   - A2Ec70_gfs_data60_refnorm       [TRAIN_SAMPLE_RATIO=0.6]
-#   - A2Ec70_gfs_data80_refnorm       [TRAIN_SAMPLE_RATIO=0.8]
+#   - A2Ec70_gfs_data25_refnorm       [TRAIN_SAMPLE_RATIO=0.25]
+#   - A2Ec70_gfs_data50_refnorm       [TRAIN_SAMPLE_RATIO=0.5]
 #   - A2Ec70_gfs_refnorm              [100%, reused from main]
 #
 # 4 / source_mix
-#   Source combination study:
 #   - single-source models from main
 #   - A2Ec70_gfs_cma_refnorm
 #   - A2Ec70_gfs_hres_refnorm
@@ -55,20 +113,15 @@ set -euo pipefail
 #   - A2Ec70_gfs_cma_hres_refnorm     [triple-source, reused from main]
 #
 # 5 / depth
-#   Depth scaling only:
-#   - A2Ec70_gfs_refnorm              [A2E-c70-Lite, reused from main; channels=384,768,1536, depth=0,0,1, res=1,1,1]
-#   - A2Ec70_mid_refnorm              [A2E-c70-Mid; channels=384,768,1536, depth=0,0,2, res=2,2,2]
-#   - A2Ec70_deep_refnorm             [A2E-c70-Deep; channels=384,768,1536, depth=0,1,2, res=3,3,3]
+#   - A2Ec70_gfs_refnorm              [A2E-c70-Lite, reused from main]
+#   - A2Ec70_mid_refnorm              [A2E-c70-Mid]
+#   - A2Ec70_deep_refnorm             [A2E-c70-Deep]
 #
 # 6 / parameter
-#   Gradient loss weight and FuXi RMSE loss weight sensitivity, default source = GFS:
-#   - A2Ec70_gradw_0p1                [GRAD_LOSS_WEIGHT=0.1]
-#   - A2Ec70_gradw_0p2                [GRAD_LOSS_WEIGHT=0.2]
-#   - A2Ec70_gfs_refnorm              [default grad=0.4, rmse weight=8e-3, reused from main]
-#   - A2Ec70_gradw_0p8                [GRAD_LOSS_WEIGHT=0.8]
-#   - A2Ec70_refnorm_w1em3            [CHANNEL_RMSE_WEIGHT=1e-3]
 #   - A2Ec70_refnorm_w2em3            [CHANNEL_RMSE_WEIGHT=2e-3]
 #   - A2Ec70_refnorm_w4em3            [CHANNEL_RMSE_WEIGHT=4e-3]
+#   - A2Ec70_gfs_refnorm              [default rmse weight=8e-3, reused from main]
+#   - A2Ec70_refnorm_w1em2            [CHANNEL_RMSE_WEIGHT=1e-2]
 #
 # 8 / paper_min
 #   0 -> 1 -> 2 -> 3 -> 5
@@ -90,7 +143,7 @@ RECOMMENDED_SCRIPT="${A2E_ROOT}/scripts/run_recommended_experiments.sh"
 RUN=${RUN:-0}
 
 show_list() {
-  sed -n '1,95p' "$0"
+  sed -n '1,190p' "$0"
 }
 
 phase_name() {
@@ -114,7 +167,7 @@ run_phase() {
   phase=$(phase_name "$key")
   if [[ -z "$phase" ]]; then
     echo "未知实验编号/名称: $key" >&2
-    echo "运行 bash A2E/scripts/train_interface.sh list 查看可用编号" >&2
+    echo "运行 bash /scripts/train_interface.sh list 查看可用编号" >&2
     exit 2
   fi
   echo

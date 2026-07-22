@@ -28,6 +28,19 @@ DEFAULT_CLIM_PATH = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/fanjiang/
 
 HOURS_PER_STEP = 6
 DEFAULT_VARIABLES = "z500,t2m,t850,ws10,ws850,msl"
+_WARNED_MISSING_CLIM: set[str] = set()
+
+
+def warn_missing_clim(var: str, candidates: list[str], clim_ds):
+    key = ",".join(candidates)
+    if key in _WARNED_MISSING_CLIM:
+        return
+    _WARNED_MISSING_CLIM.add(key)
+    available = [] if clim_ds is None else list(clim_ds.data_vars)[:20]
+    print(
+        f"[Warning] Missing climatology for {var!r}; tried {candidates}. "
+        f"ACC will be NaN for this diagnostic. Available clim vars first 20: {available}"
+    )
 
 
 def parse_items(v: str) -> list[str]:
@@ -167,10 +180,36 @@ def compute_acc(pred: torch.Tensor, truth: torch.Tensor, clim: torch.Tensor, w: 
     return a / b
 
 
+def clim_name_candidates(var: str) -> list[str]:
+    """Return possible climatology variable names for an evaluation variable.
+
+    The FuXi/A2E channel names use ``u10m``/``v10m`` for 10 m winds, but some
+    climatology files use ``u10``/``v10`` or ECMWF-style ``10u``/``10v``.
+    Trying aliases here avoids silently reporting NaN ACC for wind-speed
+    diagnostics when the climatology uses a different naming convention.
+    """
+    aliases = {
+        "u10m": ["u10m", "u10", "10u"],
+        "v10m": ["v10m", "v10", "10v"],
+        "t2m": ["t2m", "2t", "t2"],
+        "msl": ["msl", "mslp"],
+    }
+    return aliases.get(var, [var])
+
+
 def get_clim(clim_ds, var: str, ts: pd.Timestamp, device: torch.device):
-    if clim_ds is None or var not in clim_ds:
+    if clim_ds is None:
         return None
-    da = clim_ds[var]
+
+    clim_name = None
+    for name in clim_name_candidates(var):
+        if name in clim_ds:
+            clim_name = name
+            break
+    if clim_name is None:
+        return None
+
+    da = clim_ds[clim_name]
     kwargs = {}
     if "doy" in da.dims or "doy" in da.coords:
         kwargs["doy"] = ts.dayofyear
@@ -204,13 +243,28 @@ def variable_field(var: str, field: torch.Tensor, channel_to_idx: dict[str, int]
 def variable_clim(var: str, clim_ds, ts: pd.Timestamp, device: torch.device):
     if clim_ds is None:
         return None
+
+    # Prefer a directly stored climatology for the requested diagnostic.
+    # This matters for wind speed: clim(ws) = E[sqrt(u^2+v^2)] is not the same as
+    # sqrt(E[u]^2+E[v]^2). The current clim.daily contains ws10/ws850 directly.
+    direct = get_clim(clim_ds, var, ts, device)
+    if direct is not None:
+        return direct
+
+    # Fallback for climatology files that only store wind components.
     wind_components = wind_components_for(var)
     if wind_components is not None:
         u_name, v_name = wind_components
         cu = get_clim(clim_ds, u_name, ts, device)
         cv = get_clim(clim_ds, v_name, ts, device)
+        if cu is None:
+            warn_missing_clim(u_name, clim_name_candidates(u_name), clim_ds)
+        if cv is None:
+            warn_missing_clim(v_name, clim_name_candidates(v_name), clim_ds)
         return torch.sqrt(cu ** 2 + cv ** 2) if cu is not None and cv is not None else None
-    return get_clim(clim_ds, var, ts, device)
+
+    warn_missing_clim(var, clim_name_candidates(var), clim_ds)
+    return None
 
 
 def build_a2e_model_from_config(config: dict, device: torch.device):
@@ -293,19 +347,13 @@ def build_fuxi_model(device: torch.device, fuxi_dir: str, forecast_steps: int):
     return model
 
 
-def compute_initial_losses(pred_norm: torch.Tensor, truth_norm: torch.Tensor, lat_weights_norm: torch.Tensor):
+def compute_initial_l1_loss(pred_norm: torch.Tensor, truth_norm: torch.Tensor, lat_weights_norm: torch.Tensor):
     pred_norm = torch.nan_to_num(pred_norm, nan=0.0, posinf=0.0, neginf=0.0)
     truth_norm = torch.nan_to_num(truth_norm, nan=0.0, posinf=0.0, neginf=0.0)
 
     w = match_lat_weights(lat_weights_norm, pred_norm).view(1, pred_norm.shape[-2], pred_norm.shape[-1])
     l1_loss = torch.mean(torch.abs(pred_norm - truth_norm) * w)
-
-    pred_dx = pred_norm[:, :, 1:] - pred_norm[:, :, :-1]
-    pred_dy = pred_norm[:, 1:, :] - pred_norm[:, :-1, :]
-    tgt_dx = truth_norm[:, :, 1:] - truth_norm[:, :, :-1]
-    tgt_dy = truth_norm[:, 1:, :] - truth_norm[:, :-1, :]
-    grad_loss = 0.5 * (torch.mean(torch.abs(pred_dx - tgt_dx)) + torch.mean(torch.abs(pred_dy - tgt_dy)))
-    return float(l1_loss.detach().cpu()), float(grad_loss.detach().cpu())
+    return float(l1_loss.detach().cpu())
 
 
 def robust_data_range(truth: torch.Tensor) -> torch.Tensor:
@@ -463,7 +511,7 @@ def main():
                 pred_norm = output[0] if isinstance(output, tuple) else output
                 pred_norm = pred_norm.squeeze(0)
 
-            l1_loss, grad_loss = compute_initial_losses(pred_norm, y0_norm, lat_weights_norm)
+            l1_loss = compute_initial_l1_loss(pred_norm, y0_norm, lat_weights_norm)
             a2e_current_phys = denormalize(pred_norm, mean, std)
             y0_phys = denormalize(y0_norm, mean, std)
 
@@ -488,7 +536,6 @@ def main():
                         "init_time": str(init_time),
                         "variable": var,
                         "a2e_l1_loss": l1_loss,
-                        "a2e_grad_loss": grad_loss,
                         "a2e_psnr": psnr,
                         "a2e_ssim": ssim,
                         "a2e_data_range": data_range_value,
@@ -577,7 +624,6 @@ def main():
             "init_time",
             "variable",
             "a2e_l1_loss",
-            "a2e_grad_loss",
             "a2e_psnr",
             "a2e_ssim",
             "a2e_data_range",
@@ -587,7 +633,7 @@ def main():
     initial_summary_rows = summarize(
         initial_rows,
         ["experiment", "source", "variable"],
-        ["a2e_l1_loss", "a2e_grad_loss", "a2e_psnr", "a2e_ssim", "a2e_data_range"],
+        ["a2e_l1_loss", "a2e_psnr", "a2e_ssim", "a2e_data_range"],
     )
     initial_summary_path = output_dir / "a2e_initial_metrics_summary.csv"
     write_csv(
@@ -599,8 +645,6 @@ def main():
             "variable",
             "a2e_l1_loss_mean",
             "n_a2e_l1_loss",
-            "a2e_grad_loss_mean",
-            "n_a2e_grad_loss",
             "a2e_psnr_mean",
             "n_a2e_psnr",
             "a2e_ssim_mean",

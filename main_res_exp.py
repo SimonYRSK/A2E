@@ -259,8 +259,6 @@ def build_arg_parser():
     parser.add_argument("--kl_anneal_epochs", type=int, default=7)
     parser.add_argument("--recon_loss_type", type=str, default="l1")
     parser.add_argument("--charbonnier_eps", type=float, default=1e-3)
-    parser.add_argument("--use_grad_loss", type=str2bool, default=True)
-    parser.add_argument("--grad_loss_weight", type=float, default=0.4)
     parser.add_argument("--l1_reg_weight", type=float, default=0.0)
     parser.add_argument("--l2_reg_weight", type=float, default=0.0)
     parser.add_argument("--fuxi_loss_mode", type=str, default="reference_norm", choices=["manual_weighted", "raw_mean", "reference_norm"])
@@ -474,8 +472,8 @@ def main():
         },
         "loss": {
             "recon_loss_type": args.recon_loss_type,
-            "use_grad_loss": args.use_grad_loss,
-            "grad_loss_weight": args.grad_loss_weight,
+            "use_grad_loss": False,
+            "grad_loss_weight": 0.0,
             "fuxi_loss_mode": args.fuxi_loss_mode,
             "channel_rmse_weight": args.channel_rmse_weight,
             "rmse_every_n_steps": args.rmse_every_n_steps,
@@ -543,8 +541,8 @@ def main():
         plot_root=str(plot_root),
         recon_loss_type=args.recon_loss_type,
         charbonnier_eps=args.charbonnier_eps,
-        use_grad_loss=args.use_grad_loss,
-        grad_loss_weight=args.grad_loss_weight,
+        use_grad_loss=False,
+        grad_loss_weight=0.0,
         l1_reg_weight=args.l1_reg_weight,
         l2_reg_weight=args.l2_reg_weight,
         fuxi_model=fuxi_model,

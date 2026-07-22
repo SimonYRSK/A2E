@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Recommended A2E-c70 experiment schedule.
+# Recommended A2E-c70 no-GradLoss experiment schedule.
 #
-# This script owns the experiment definitions. Use ACTION to decide whether to
-# train, evaluate, or run both:
-#   ACTION=train RUN=1 bash A2E/scripts/run_recommended_experiments.sh main
-#   ACTION=eval  RUN=1 bash A2E/scripts/run_recommended_experiments.sh main
-#   ACTION=all   RUN=1 bash A2E/scripts/run_recommended_experiments.sh main
+# This backup schedule assumes the no-GradLoss configuration is the final/main
+# configuration. Every training command is forced to:
+#   USE_GRAD_LOSS=false, GRAD_LOSS_WEIGHT=0
 #
-# The public wrappers are:
-#   bash A2E/scripts/train_interface.sh <phase>
-#   bash A2E/scripts/eval_interface.sh <phase>
+# Use ACTION to decide whether to train, evaluate, or run both:
+#   ACTION=train RUN=1 bash A2E_backup/scripts/run_recommended_experiments.sh main
+#   ACTION=eval  RUN=1 bash A2E_backup/scripts/run_recommended_experiments.sh main
+#   ACTION=all   RUN=1 bash A2E_backup/scripts/run_recommended_experiments.sh main
 #
 # Evaluation uses eval/eval_fuxi_rollout.py:
-#   FuXi(A2E) rollout RMSE/ACC + A2E initial-field L1/GradLoss/PSNR/SSIM.
+#   FuXi(A2E) rollout RMSE/ACC + A2E initial-field L1/PSNR/SSIM.
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 A2E_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
@@ -83,7 +82,7 @@ phase_smoke() {
     "SOURCES=gfs" \
     "EPOCHS=1" \
     "VAL_SAMPLE_PER_MONTH=1" \
-    "RMSE_EVERY_N_STEPS=10" \
+    "RMSE_EVERY_N_STEPS=1" \
     "FUXI_LOSS_MODE=reference_norm" \
     "CHANNEL_RMSE_WEIGHT=8e-3"
 
@@ -95,7 +94,7 @@ phase_smoke() {
 
 # -----------------------------------------------------------------------------
 # Phase 1: Main experiment
-# Purpose: single-source models + full GFS/CMA/HRES multi-source model.
+# Purpose: no-GradLoss single-source models + full GFS/CMA/HRES model.
 # -----------------------------------------------------------------------------
 phase_main() {
   run_train "A2Ec70_gfs_refnorm" \
@@ -136,38 +135,18 @@ phase_main() {
 }
 
 # -----------------------------------------------------------------------------
-# Phase 2: Core loss ablation
-# Purpose: show whether Grad loss and FuXi downstream loss matter.
+# Phase 2: Core loss/source ablation
+# Purpose: show whether FuXi downstream loss and source embedding matter.
+# Final no-GradLoss baseline is reused from phase_main:
+#   A2Ec70_gfs_refnorm = L1 + FuXi reference_norm, w=8e-3.
 # -----------------------------------------------------------------------------
 phase_loss_ablation() {
-  # Full baseline is reused from phase_main:
-  #   A2Ec70_gfs_refnorm = L1 + Grad + FuXi reference_norm, w=8e-3.
-
   run_train "A2Ec70_ab_wo_fuxi" \
     "SOURCES=gfs" \
     "EPOCHS=90" \
-    "USE_GRAD_LOSS=true" \
-    "GRAD_LOSS_WEIGHT=0.4" \
     "FUXI_LOSS_MODE=reference_norm" \
     "CHANNEL_RMSE_WEIGHT=0"
 
-  run_train "A2Ec70_ab_wo_grad" \
-    "SOURCES=gfs" \
-    "EPOCHS=90" \
-    "USE_GRAD_LOSS=false" \
-    "GRAD_LOSS_WEIGHT=0" \
-    "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=8e-3"
-
-  run_train "A2Ec70_ab_l1_only" \
-    "SOURCES=gfs" \
-    "EPOCHS=90" \
-    "USE_GRAD_LOSS=false" \
-    "GRAD_LOSS_WEIGHT=0" \
-    "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=0"
-
-  # Source-embedding ablation is meaningful for multi-source training.
   run_train "A2Ec70_ab_wo_source_emb" \
     "SOURCES=gfs,cma,hres" \
     "EPOCHS=90" \
@@ -178,9 +157,7 @@ phase_loss_ablation() {
 
   for exp in \
     A2Ec70_gfs_refnorm \
-    A2Ec70_ab_wo_fuxi \
-    A2Ec70_ab_wo_grad \
-    A2Ec70_ab_l1_only
+    A2Ec70_ab_wo_fuxi
   do
     run_eval "${exp}" \
       "EVAL_SOURCES=gfs" \
@@ -196,43 +173,25 @@ phase_loss_ablation() {
 
 # -----------------------------------------------------------------------------
 # Phase 3: Data scale study
-# Purpose: GFS-only training with random subsets of the training timestamps.
-# Full data is reused from phase_main: A2Ec70_gfs_refnorm.
 # -----------------------------------------------------------------------------
 phase_data_scale() {
-  run_train "A2Ec70_gfs_data20_refnorm" \
+  run_train "A2Ec70_gfs_data25_refnorm" \
     "SOURCES=gfs" \
     "EPOCHS=90" \
-    "TRAIN_SAMPLE_RATIO=0.2" \
+    "TRAIN_SAMPLE_RATIO=0.25" \
     "FUXI_LOSS_MODE=reference_norm" \
     "CHANNEL_RMSE_WEIGHT=8e-3"
 
-  run_train "A2Ec70_gfs_data40_refnorm" \
+  run_train "A2Ec70_gfs_data50_refnorm" \
     "SOURCES=gfs" \
     "EPOCHS=90" \
-    "TRAIN_SAMPLE_RATIO=0.4" \
-    "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=8e-3"
-
-  run_train "A2Ec70_gfs_data60_refnorm" \
-    "SOURCES=gfs" \
-    "EPOCHS=90" \
-    "TRAIN_SAMPLE_RATIO=0.6" \
-    "FUXI_LOSS_MODE=reference_norm" \
-    "CHANNEL_RMSE_WEIGHT=8e-3"
-
-  run_train "A2Ec70_gfs_data80_refnorm" \
-    "SOURCES=gfs" \
-    "EPOCHS=90" \
-    "TRAIN_SAMPLE_RATIO=0.8" \
+    "TRAIN_SAMPLE_RATIO=0.5" \
     "FUXI_LOSS_MODE=reference_norm" \
     "CHANNEL_RMSE_WEIGHT=8e-3"
 
   for exp in \
-    A2Ec70_gfs_data20_refnorm \
-    A2Ec70_gfs_data40_refnorm \
-    A2Ec70_gfs_data60_refnorm \
-    A2Ec70_gfs_data80_refnorm \
+    A2Ec70_gfs_data25_refnorm \
+    A2Ec70_gfs_data50_refnorm \
     A2Ec70_gfs_refnorm
   do
     run_eval "${exp}" \
@@ -244,8 +203,6 @@ phase_data_scale() {
 
 # -----------------------------------------------------------------------------
 # Phase 4: Source mixing study
-# Purpose: compare single-source, dual-source, and three-source training.
-# Single-source and three-source baselines are reused from phase_main.
 # -----------------------------------------------------------------------------
 phase_source_mix() {
   run_train "A2Ec70_gfs_cma_refnorm" \
@@ -284,7 +241,6 @@ phase_source_mix() {
 
 # -----------------------------------------------------------------------------
 # Phase 5: Depth scaling
-# Purpose: A2E-Lite vs A2E-Mid vs A2E-Deep. A2E-Lite is reused from main.
 # -----------------------------------------------------------------------------
 phase_depth_scaling() {
   run_train "A2Ec70_mid_refnorm" \
@@ -321,42 +277,23 @@ phase_depth_scaling() {
 }
 
 # -----------------------------------------------------------------------------
-# Phase 6: Parameter sensitivity
-# Purpose: robustness checks on GFS single-source.
-# Defaults reused from phase_main:
-#   grad_loss_weight=0.4, channel_rmse_weight=8e-3.
+# Phase 6: FuXi RMSE loss weight sensitivity
 # -----------------------------------------------------------------------------
 phase_parameter_study() {
-  for w in 0.1 0.2 0.8; do
-    tag=${w/./p}
-    run_train "A2Ec70_gradw_${tag}" \
-      "SOURCES=gfs" \
-      "EPOCHS=90" \
-      "USE_GRAD_LOSS=true" \
-      "GRAD_LOSS_WEIGHT=${w}" \
-      "FUXI_LOSS_MODE=reference_norm" \
-      "CHANNEL_RMSE_WEIGHT=8e-3"
-  done
-
-  for w in 1e-3 2e-3 4e-3; do
+  for w in 2e-3 4e-3 1e-2; do
     tag=${w/-/m}
     run_train "A2Ec70_refnorm_w${tag}" \
       "SOURCES=gfs" \
       "EPOCHS=90" \
-      "USE_GRAD_LOSS=true" \
-      "GRAD_LOSS_WEIGHT=0.4" \
       "FUXI_LOSS_MODE=reference_norm" \
       "CHANNEL_RMSE_WEIGHT=${w}"
   done
 
   for exp in \
-    A2Ec70_gradw_0p1 \
-    A2Ec70_gradw_0p2 \
-    A2Ec70_gfs_refnorm \
-    A2Ec70_gradw_0p8 \
-    A2Ec70_refnorm_w1em3 \
     A2Ec70_refnorm_w2em3 \
-    A2Ec70_refnorm_w4em3
+    A2Ec70_refnorm_w4em3 \
+    A2Ec70_gfs_refnorm \
+    A2Ec70_refnorm_w1em2
   do
     run_eval "${exp}" \
       "EVAL_SOURCES=gfs" \
@@ -365,9 +302,6 @@ phase_parameter_study() {
   done
 }
 
-# -----------------------------------------------------------------------------
-# Raw baseline placeholder
-# -----------------------------------------------------------------------------
 phase_raw_baseline_note() {
   echo
   echo "[NOTE] Raw GFS/CMA/HRES baseline is listed in the checklist as completed."
@@ -376,30 +310,14 @@ phase_raw_baseline_note() {
 }
 
 case "${PHASE}" in
-  smoke)
-    phase_smoke
-    ;;
-  main)
-    phase_main
-    ;;
-  loss_ablation|loss)
-    phase_loss_ablation
-    ;;
-  data_scale|datascale|data)
-    phase_data_scale
-    ;;
-  source_mix|mix|dual_source|dual)
-    phase_source_mix
-    ;;
-  depth|depth_scaling|scaling|scale)
-    phase_depth_scaling
-    ;;
-  parameter|param)
-    phase_parameter_study
-    ;;
-  raw_note|raw)
-    phase_raw_baseline_note
-    ;;
+  smoke) phase_smoke ;;
+  main) phase_main ;;
+  loss_ablation|loss) phase_loss_ablation ;;
+  data_scale|datascale|data) phase_data_scale ;;
+  source_mix|mix|dual_source|dual) phase_source_mix ;;
+  depth|depth_scaling|scaling|scale) phase_depth_scaling ;;
+  parameter|param) phase_parameter_study ;;
+  raw_note|raw) phase_raw_baseline_note ;;
   all)
     phase_raw_baseline_note
     phase_smoke

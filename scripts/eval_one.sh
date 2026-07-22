@@ -25,7 +25,7 @@ Common KEY=VALUE overrides:
 Outputs:
   fuxi_rollout_metrics_detail.csv    FuXi(A2E) rollout RMSE/ACC by lead/variable
   fuxi_rollout_metrics_summary.csv   mean FuXi(A2E) rollout RMSE/ACC
-  a2e_initial_metrics.csv            A2E-vs-ERA5 L1/GradLoss plus PSNR/SSIM
+  a2e_initial_metrics.csv            A2E-vs-ERA5 L1 plus PSNR/SSIM
 USAGE
 }
 
